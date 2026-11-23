@@ -1,0 +1,152 @@
+name: Operações
+
+# Rotinas de operação para os alunos, sem acesso manual aos servidores:
+#   status          saúde das VMs, containers, versões, tarefas e backups
+#   logs            últimas linhas de log dos containers (e do backup)
+#   restart         reinicia serviços; com recreate=true recria os containers
+#                   mantendo os volumes (os dados permanecem)
+#   backup          executa um backup agora (mongodump -> S3)
+#   list-backups    lista os backups do ambiente no S3
+#   restore-test    restaura um backup num container isolado e confere
+#   restore         restaura um backup NO BANCO DA DEMONSTRAÇÃO (exige confirmação)
+#   reset-demo-list prepara uma lista nova para a apresentação (exige confirmação)
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      operation:
+        description: Operação
+        type: choice
+        options: [status, logs, restart, backup, list-backups, restore-test, restore, reset-demo-list]
+        default: status
+      target:
+        description: VM alvo (status, logs, restart)
+        type: choice
+        options: [all, app, db]
+        default: all
+      service:
+        description: "Container (logs, restart): all, todo-api, todo-frontend, todo-caddy, todo-mongo ou backup"
+        type: string
+        default: all
+      log_lines:
+        description: Linhas de log
+        type: number
+        default: 100
+      recreate:
+        description: "restart: recriar os containers mantendo os volumes"
+        type: boolean
+        default: false
+      backup_key:
+        description: "restore-test/restore: arquivo do backup (veja list-backups) ou latest"
+        type: string
+        default: latest
+      confirm:
+        description: "restore/reset-demo-list: digite o nome do ambiente para confirmar"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: infra-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.17.2"
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+
+jobs:
+  operation:
+    name: ${{ inputs.operation }} em ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Confirmar operações que alteram a lista da demonstração
+        if: inputs.operation == 'restore' || inputs.operation == 'reset-demo-list'
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          if [ "$CONFIRM" != "$ENVIRONMENT" ]; then
+            echo "::error::Esta operação substitui as tarefas atuais. Digite '${ENVIRONMENT}' em confirm."
+            exit 1
+          fi
+
+      - name: Acesso ao ambiente
+        id: access
+        uses: ./.github/actions/infra-access
+        with:
+          environment: ${{ inputs.environment }}
+          aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          terraform-version: ${{ env.TF_VERSION }}
+          open-ssh: ${{ inputs.operation != 'list-backups' }}
+
+      - name: Ambiente inexistente
+        if: steps.access.outputs.has_infra != 'true'
+        run: |
+          echo "::error::O ambiente ${{ inputs.environment }} não existe."
+          exit 1
+
+      - name: Listar os backups no S3
+        if: inputs.operation == 'list-backups'
+        env:
+          BUCKET: ${{ steps.access.outputs.backup_bucket }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          LIST="$(aws s3 ls "s3://${BUCKET}/${ENVIRONMENT}/" | grep -E '\.archive\.gz$' | sort -r || true)"
+          echo "$LIST"
+          {
+            echo "### Backups em s3://${BUCKET}/${ENVIRONMENT}/"
+            echo '```'
+            echo "${LIST:-nenhum backup encontrado}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Executar a operação com Ansible
+        if: inputs.operation != 'list-backups'
+        working-directory: ansible
+        env:
+          ANSIBLE_FORCE_COLOR: "true"
+          OPERATION: ${{ inputs.operation }}
+          TARGET: ${{ inputs.target }}
+          SERVICE: ${{ inputs.service }}
+          LOG_LINES: ${{ inputs.log_lines }}
+          RECREATE: ${{ inputs.recreate }}
+          BACKUP_KEY: ${{ inputs.backup_key }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+          MONGO_BACKUP_PASSWORD: ${{ secrets.MONGO_BACKUP_PASSWORD }}
+        run: |
+          jq -n \
+            --arg operation "$OPERATION" \
+            --arg target "$TARGET" \
+            --arg service "$SERVICE" \
+            --argjson log_lines "$LOG_LINES" \
+            --argjson recreate_containers "$RECREATE" \
+            --arg backup_key "$BACKUP_KEY" \
+            '{operation: $operation, target: $target, service: $service, log_lines: $log_lines,
+              recreate_containers: $recreate_containers, backup_key: $backup_key}' > "$RUNNER_TEMP/ops-vars.json"
+          ansible-playbook ops.yml -e @"$RUNNER_TEMP/ops-vars.json" | tee "$RUNNER_TEMP/ops.log"
+          {
+            echo "### Operação ${OPERATION} (${TARGET}/${SERVICE})"
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/ops.log" | grep -vE '^\s*$' | tail -n 120
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fechar o SSH do runner
+        if: always() && steps.access.outputs.security_group_id != '' && inputs.operation != 'list-backups'
+        env:
+          SG_ID: ${{ steps.access.outputs.security_group_id }}
+        run: .github/scripts/ssh-access.sh close "$SG_ID"

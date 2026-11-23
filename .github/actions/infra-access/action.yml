@@ -1,0 +1,127 @@
+name: Acesso ao ambiente
+description: >-
+  Autentica na AWS via OIDC, lê as saídas do Terraform do ambiente, gera o
+  inventário do Ansible, instala o Ansible e (opcionalmente) libera o SSH da
+  VM da aplicação apenas para o IP deste runner.
+
+inputs:
+  environment:
+    description: Ambiente (dev, homolog ou prod)
+    required: true
+  aws-role-arn:
+    description: ARN da role assumida via OIDC
+    required: true
+  aws-region:
+    description: Região da AWS
+    required: true
+  ssh-private-key:
+    description: Chave privada SSH das VMs
+    required: false
+    default: ""
+  terraform-version:
+    description: Versão do Terraform
+    required: true
+  open-ssh:
+    description: Liberar o SSH temporariamente para o runner
+    required: false
+    default: "true"
+
+outputs:
+  has_infra:
+    description: true se o ambiente existe (há saídas no state)
+    value: ${{ steps.outputs.outputs.has_infra }}
+  app_url:
+    description: URL HTTPS da aplicação
+    value: ${{ steps.outputs.outputs.app_url }}
+  app_public_ip:
+    description: IP elástico da VM da aplicação
+    value: ${{ steps.outputs.outputs.app_public_ip }}
+  db_public_ip:
+    description: IP público (somente saída) da VM do banco
+    value: ${{ steps.outputs.outputs.db_public_ip }}
+  security_group_id:
+    description: Security group da VM da aplicação
+    value: ${{ steps.outputs.outputs.security_group_id }}
+  backup_bucket:
+    description: Bucket dos backups
+    value: ${{ steps.outputs.outputs.backup_bucket }}
+
+runs:
+  using: composite
+  steps:
+    - name: Credenciais temporárias da AWS (OIDC)
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ inputs.aws-role-arn }}
+        aws-region: ${{ inputs.aws-region }}
+        role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Instalar o Terraform
+      uses: hashicorp/setup-terraform@v4
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Terraform init (state remoto do ambiente)
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: .github/scripts/tf-init.sh "$ENVIRONMENT"
+
+    - name: Ler as saídas do Terraform
+      id: outputs
+      shell: bash
+      run: |
+        terraform -chdir=terraform output -json > "$RUNNER_TEMP/tf-outputs.json"
+        if [ "$(jq 'length' "$RUNNER_TEMP/tf-outputs.json")" -eq 0 ]; then
+          echo "::warning::Ambiente sem recursos provisionados (state vazio)."
+          echo "has_infra=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        {
+          echo "has_infra=true"
+          jq -r '"app_url=\(.app_url.value)",
+                 "app_public_ip=\(.app_public_ip.value)",
+                 "db_public_ip=\(.db_public_ip.value)",
+                 "security_group_id=\(.app_security_group_id.value)",
+                 "backup_bucket=\(.backup_bucket.value)"' "$RUNNER_TEMP/tf-outputs.json"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Instalar o Python
+      if: steps.outputs.outputs.has_infra == 'true'
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+        cache: pip
+        cache-dependency-path: ansible/requirements.txt
+
+    - name: Instalar o Ansible
+      if: steps.outputs.outputs.has_infra == 'true'
+      shell: bash
+      run: |
+        pip install --quiet -r ansible/requirements.txt
+        ansible --version | head -n 1
+
+    - name: Chave SSH e inventário do Ansible
+      if: steps.outputs.outputs.has_infra == 'true'
+      shell: bash
+      env:
+        SSH_PRIVATE_KEY: ${{ inputs.ssh-private-key }}
+      run: |
+        install -m 700 -d ~/.ssh
+        if [ -n "$SSH_PRIVATE_KEY" ]; then
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/todo_deploy
+          chmod 600 ~/.ssh/todo_deploy
+        fi
+        python3 ansible/inventory/generate_inventory.py "$RUNNER_TEMP/tf-outputs.json" > ansible/inventory/hosts.yml
+        echo "Inventário gerado:"
+        (cd ansible && ansible-inventory --graph)
+
+    - name: Liberar o SSH temporariamente para este runner
+      if: steps.outputs.outputs.has_infra == 'true' && inputs.open-ssh == 'true'
+      shell: bash
+      env:
+        SG_ID: ${{ steps.outputs.outputs.security_group_id }}
+        APP_IP: ${{ steps.outputs.outputs.app_public_ip }}
+      run: .github/scripts/ssh-access.sh open "$SG_ID" "$APP_IP"

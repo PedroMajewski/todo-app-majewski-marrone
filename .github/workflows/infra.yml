@@ -1,0 +1,444 @@
+name: Infraestrutura
+
+# Pipeline principal (PM-04): cria, atualiza ou destrói o ambiente do ToDo App
+# a partir dos parâmetros informados na execução.
+#   plan    -> valida e mostra as alterações previstas (nada é aplicado)
+#   apply   -> Terraform (plan + apply) -> Ansible -> testes de fumaça
+#   destroy -> backup final -> terraform destroy (exige confirmação)
+# Reexecutar com os mesmos parâmetros não gera alterações (idempotência).
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente de destino
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      action:
+        description: "Ação: plan (só planejar), apply (criar/atualizar) ou destroy (remover)"
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+      instance_name:
+        description: Nome base das VMs (gera <nome>-app-<ambiente> e <nome>-db-<ambiente>)
+        type: string
+        default: vm-pm04
+      app_instance_type:
+        description: Tipo da VM da aplicação
+        type: choice
+        options: [t3.micro, t3.small, c7i-flex.large, m7i-flex.large]
+        default: t3.micro
+      db_instance_type:
+        description: Tipo da VM do banco (MongoDB)
+        type: choice
+        options: [t3.micro, t3.small, c7i-flex.large, m7i-flex.large]
+        default: t3.small
+      db_volume_size:
+        description: Volume persistente do MongoDB em GB (5 a 50; só pode aumentar)
+        type: number
+        default: 10
+      app_version:
+        description: "Versão da aplicação (tag vX.Y.Z das imagens). Vazio = manter a atual (ou a última release na criação)"
+        type: string
+        default: ""
+      mongo_version:
+        description: "Versão da imagem mongo (ex.: 8.0.38). Vazio = manter a atual (8.0.38 na criação)"
+        type: string
+        default: ""
+      update_os:
+        description: Aplicar atualizações do sistema operacional
+        type: boolean
+        default: false
+      extra_packages:
+        description: "Pacotes adicionais separados por vírgula (ex.: git,tree,tmux)"
+        type: string
+        default: ""
+      pull_images:
+        description: Baixar novamente as imagens mesmo com a mesma tag
+        type: boolean
+        default: false
+      admin_cidrs:
+        description: "IPs autorizados a SSH na VM da aplicação, separados por vírgula (ex.: 203.0.113.10/32). Vazio = SSH fechado"
+        type: string
+        default: ""
+      domain_name:
+        description: "Domínio próprio (opcional). Vazio = <ip>.sslip.io"
+        type: string
+        default: ""
+      confirm_destroy:
+        description: "Para destroy: digite o nome do ambiente para confirmar"
+        type: string
+        default: ""
+      keep_backups:
+        description: "Para destroy: manter os backups no S3 (recomendado)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+
+concurrency:
+  group: infra-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.17.2"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+
+jobs:
+  plan:
+    name: Terraform · validar e planejar (${{ inputs.action }} em ${{ inputs.environment }})
+    runs-on: ubuntu-24.04
+    outputs:
+      has_changes: ${{ steps.summary.outputs.has_changes }}
+    env:
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TF_VAR_instance_name: ${{ inputs.instance_name }}
+      TF_VAR_app_instance_type: ${{ inputs.app_instance_type }}
+      TF_VAR_db_instance_type: ${{ inputs.db_instance_type }}
+      TF_VAR_db_data_volume_size: ${{ inputs.db_volume_size }}
+      TF_VAR_domain_name: ${{ inputs.domain_name }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Conferir parâmetros
+        env:
+          ACTION: ${{ inputs.action }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          CONFIRM: ${{ inputs.confirm_destroy }}
+          ADMIN_CIDRS: ${{ inputs.admin_cidrs }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          P_INSTANCE_NAME: ${{ inputs.instance_name }}
+          P_APP_TYPE: ${{ inputs.app_instance_type }}
+          P_DB_TYPE: ${{ inputs.db_instance_type }}
+          P_VOLUME: ${{ inputs.db_volume_size }}
+          P_APP_VERSION: ${{ inputs.app_version || '(manter)' }}
+          P_MONGO_VERSION: ${{ inputs.mongo_version || '(manter)' }}
+          P_UPDATE_OS: ${{ inputs.update_os }}
+          P_PULL: ${{ inputs.pull_images }}
+          P_PACKAGES: ${{ inputs.extra_packages || '(nenhum)' }}
+          P_DOMAIN: ${{ inputs.domain_name || '(sslip.io)' }}
+        run: |
+          [ -n "$ROLE_ARN" ] || { echo "::error::Defina a variável AWS_ROLE_ARN (bootstrap/aws-bootstrap.sh)."; exit 1; }
+          [ -n "$SSH_PUBLIC_KEY" ] || { echo "::error::Defina o secret SSH_PUBLIC_KEY."; exit 1; }
+          if [ "$ACTION" = "destroy" ] && [ "$CONFIRM" != "$ENVIRONMENT" ]; then
+            echo "::error::Para destruir, digite '${ENVIRONMENT}' em confirm_destroy."
+            exit 1
+          fi
+          # admin_cidrs "a/32, b/32" -> lista JSON para o Terraform
+          CIDRS_JSON="$(jq -cn --arg c "$ADMIN_CIDRS" '$c | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+          echo "TF_VAR_admin_cidrs=${CIDRS_JSON}" >> "$GITHUB_ENV"
+          {
+            echo "### Parâmetros da execução"
+            echo ""
+            echo "| Parâmetro | Valor |"
+            echo "|---|---|"
+            echo "| environment | \`${ENVIRONMENT}\` |"
+            echo "| action | \`${ACTION}\` |"
+            echo "| instance_name | \`${P_INSTANCE_NAME}\` |"
+            echo "| app_instance_type / db_instance_type | \`${P_APP_TYPE}\` / \`${P_DB_TYPE}\` |"
+            echo "| db_volume_size | \`${P_VOLUME} GB\` |"
+            echo "| app_version / mongo_version | \`${P_APP_VERSION}\` / \`${P_MONGO_VERSION}\` |"
+            echo "| update_os / pull_images | \`${P_UPDATE_OS}\` / \`${P_PULL}\` |"
+            echo "| extra_packages | \`${P_PACKAGES}\` |"
+            echo "| admin_cidrs | \`${CIDRS_JSON}\` |"
+            echo "| domain_name | \`${P_DOMAIN}\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Credenciais temporárias da AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}-plan
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive -diff
+
+      - name: Terraform init
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: .github/scripts/tf-init.sh "$ENVIRONMENT"
+
+      - name: Terraform validate
+        run: terraform -chdir=terraform validate
+
+      - name: Terraform plan
+        env:
+          ACTION: ${{ inputs.action }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          MODE=""
+          [ "$ACTION" = "destroy" ] && MODE="-destroy"
+          # shellcheck disable=SC2086
+          terraform -chdir=terraform plan $MODE -no-color -input=false \
+            -var-file="envs/${ENVIRONMENT}.tfvars" -out=tfplan | tee terraform/plan.txt
+
+      - name: Resumo do plan
+        id: summary
+        run: .github/scripts/tf-plan-summary.sh tfplan terraform/plan.txt
+
+      - name: Guardar o plan para a etapa de aplicação
+        uses: actions/upload-artifact@v7
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: |
+            terraform/tfplan
+            terraform/plan.txt
+            terraform/.terraform.lock.hcl
+          include-hidden-files: true
+          retention-days: 7
+
+  apply:
+    name: Terraform · aplicar (${{ inputs.environment }})
+    needs: plan
+    if: inputs.action == 'apply'
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    outputs:
+      app_url: ${{ steps.out.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Credenciais temporárias da AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}-apply
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Baixar o plan aprovado
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan
+
+      - name: Terraform init (mesmas versões de provider do plan)
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          cp "$RUNNER_TEMP/plan/.terraform.lock.hcl" terraform/.terraform.lock.hcl
+          .github/scripts/tf-init.sh "$ENVIRONMENT"
+
+      - name: Terraform apply
+        if: needs.plan.outputs.has_changes == 'true'
+        run: terraform -chdir=terraform apply -input=false -auto-approve "$RUNNER_TEMP/plan/tfplan"
+
+      - name: Sem alterações de infraestrutura
+        if: needs.plan.outputs.has_changes != 'true'
+        run: echo "Plan sem alterações - terraform apply não é necessário." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Inventário de recursos
+        id: out
+        run: |
+          terraform -chdir=terraform output -json > "$RUNNER_TEMP/outputs.json"
+          jq -r '"app_url=\(.app_url.value)"' "$RUNNER_TEMP/outputs.json" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Inventário de recursos (${{ inputs.environment }})"
+            echo ""
+            echo "| Recurso | Valor |"
+            echo "|---|---|"
+            jq -r 'to_entries[] | "| \(.key) | `\(.value.value)` |"' "$RUNNER_TEMP/outputs.json"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Guardar o inventário como evidência
+        uses: actions/upload-artifact@v7
+        with:
+          name: inventario-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/outputs.json
+          retention-days: 30
+
+  configure:
+    name: Ansible · configurar e implantar (${{ inputs.environment }})
+    needs: apply
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    outputs:
+      app_url: ${{ steps.access.outputs.app_url }}
+      app_public_ip: ${{ steps.access.outputs.app_public_ip }}
+      db_public_ip: ${{ steps.access.outputs.db_public_ip }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Acesso ao ambiente
+        id: access
+        uses: ./.github/actions/infra-access
+        with:
+          environment: ${{ inputs.environment }}
+          aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          terraform-version: ${{ env.TF_VERSION }}
+
+      - name: Ansible playbook
+        working-directory: ansible
+        env:
+          ANSIBLE_FORCE_COLOR: "true"
+          APP_VERSION: ${{ inputs.app_version }}
+          MONGO_VERSION: ${{ inputs.mongo_version }}
+          UPDATE_OS: ${{ inputs.update_os }}
+          EXTRA_PACKAGES: ${{ inputs.extra_packages }}
+          PULL_IMAGES: ${{ inputs.pull_images }}
+          OWNER: ${{ github.repository_owner }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+          MONGO_BACKUP_PASSWORD: ${{ secrets.MONGO_BACKUP_PASSWORD }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+          jq -n \
+            --arg app_version "$APP_VERSION" \
+            --arg app_version_default "$LATEST_TAG" \
+            --arg mongo_version "$MONGO_VERSION" \
+            --argjson update_os "$UPDATE_OS" \
+            --arg extra_packages "$EXTRA_PACKAGES" \
+            --argjson pull_images "$PULL_IMAGES" \
+            --arg image_registry "ghcr.io/${OWNER,,}" \
+            --arg acme_email "$ACME_EMAIL" \
+            '{app_version: $app_version, app_version_default: $app_version_default,
+              mongo_version: $mongo_version, update_os: $update_os,
+              extra_packages: $extra_packages, pull_images: $pull_images,
+              image_registry: $image_registry, acme_email: $acme_email}' > "$RUNNER_TEMP/ansible-vars.json"
+          echo "Variáveis da execução:"; cat "$RUNNER_TEMP/ansible-vars.json"
+          ansible-playbook playbook.yml -e @"$RUNNER_TEMP/ansible-vars.json" | tee "$RUNNER_TEMP/ansible.log"
+          {
+            echo "### Ansible"
+            echo '```'
+            sed -n '/PLAY RECAP/,$p' "$RUNNER_TEMP/ansible.log" | sed 's/\x1b\[[0-9;]*m//g' | head -n 8
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fechar o SSH do runner
+        if: always() && steps.access.outputs.security_group_id != ''
+        env:
+          SG_ID: ${{ steps.access.outputs.security_group_id }}
+        run: .github/scripts/ssh-access.sh close "$SG_ID"
+
+      - name: Guardar o log do Ansible como evidência
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ansible-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ansible.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+  smoke-test:
+    name: Testes de fumaça (${{ inputs.environment }})
+    needs: configure
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: HTTPS, fluxo completo e isolamento da rede
+        env:
+          APP_URL: ${{ needs.configure.outputs.app_url }}
+          DB_IP: ${{ needs.configure.outputs.db_public_ip }}
+          APP_IP: ${{ needs.configure.outputs.app_public_ip }}
+        run: .github/scripts/smoke-test.sh "$APP_URL" "$DB_IP" "$APP_IP"
+
+  destroy:
+    name: Destruir o ambiente (${{ inputs.environment }})
+    needs: plan
+    if: inputs.action == 'destroy'
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Acesso ao ambiente
+        id: access
+        uses: ./.github/actions/infra-access
+        with:
+          environment: ${{ inputs.environment }}
+          aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          terraform-version: ${{ env.TF_VERSION }}
+
+      - name: Backup final antes de remover
+        id: final_backup
+        if: steps.access.outputs.has_infra == 'true'
+        continue-on-error: true
+        working-directory: ansible
+        env:
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+          MONGO_BACKUP_PASSWORD: ${{ secrets.MONGO_BACKUP_PASSWORD }}
+        run: ansible-playbook ops.yml -e operation=backup -e backup_reason=pre-destroy
+
+      - name: Fechar o SSH do runner
+        if: always() && steps.access.outputs.security_group_id != ''
+        env:
+          SG_ID: ${{ steps.access.outputs.security_group_id }}
+        run: .github/scripts/ssh-access.sh close "$SG_ID"
+
+      - name: Baixar o plan de destruição
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/plan
+
+      - name: Terraform init (mesmas versões de provider do plan)
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          cp "$RUNNER_TEMP/plan/.terraform.lock.hcl" terraform/.terraform.lock.hcl
+          .github/scripts/tf-init.sh "$ENVIRONMENT"
+
+      - name: Terraform destroy
+        if: needs.plan.outputs.has_changes == 'true'
+        run: terraform -chdir=terraform apply -input=false -auto-approve "$RUNNER_TEMP/plan/tfplan"
+
+      - name: Remover os backups do ambiente (keep_backups=false)
+        if: ${{ !inputs.keep_backups && steps.access.outputs.backup_bucket != '' }}
+        env:
+          BUCKET: ${{ steps.access.outputs.backup_bucket }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: aws s3 rm "s3://${BUCKET}/${ENVIRONMENT}/" --recursive --only-show-errors
+
+      - name: O que foi removido e o que continua gerando custo
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          KEEP: ${{ inputs.keep_backups }}
+          BUCKET: ${{ steps.access.outputs.backup_bucket }}
+          BACKUP_OUTCOME: ${{ steps.final_backup.outcome }}
+        run: |
+          REMAINING="$(aws s3 ls "s3://${BUCKET}/${ENVIRONMENT}/" --recursive --summarize 2>/dev/null | tail -n 2 | tr '\n' ' ' || true)"
+          {
+            echo "### Encerramento do ambiente ${ENVIRONMENT}"
+            echo ""
+            echo "**Removido:** VMs, IP elástico, volume EBS do MongoDB, discos, VPC, sub-redes, regras de acesso e role da VM do banco."
+            echo ""
+            echo "**Backup final:** ${BACKUP_OUTCOME:-não executado}."
+            echo ""
+            echo "**Continua existindo (custo de centavos por mês):**"
+            echo "- Backups do ambiente em \`s3://${BUCKET}/${ENVIRONMENT}/\` (manter=${KEEP}; expiram pela retenção do bucket): ${REMAINING:-vazio}"
+            echo "- Terraform State em \`s3://todo-app-tfstate-<conta>/todo-app/${ENVIRONMENT}/\` (versões antigas expiram em 90 dias)"
+            echo "- Bootstrap (role OIDC e buckets): remova com \`bootstrap/aws-bootstrap.sh <repo> <região> --remover\`"
+            echo "- Imagens no GHCR (gratuitas em repositório público)"
+          } >> "$GITHUB_STEP_SUMMARY"
