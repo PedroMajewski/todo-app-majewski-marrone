@@ -64,3 +64,10 @@ li button:hover {
 span {
   cursor: pointer;
 }
+
+.error {
+  color: #b00020;
+  background-color: #fdecea;
+  padding: 8px;
+  border-radius: 5px;
+}

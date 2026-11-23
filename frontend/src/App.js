@@ -2,42 +2,68 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
+// Endereço base da API. Vazio (padrão) = mesmo endereço da interface:
+// o Nginx encaminha /todos e /todos/:id para a API. Pode ser definido no build
+// com REACT_APP_API_URL, se a API estiver em outro endereço.
+const API_URL = (process.env.REACT_APP_API_URL || '').replace(/\/$/, '');
+const TODOS_URL = `${API_URL}/todos`;
+
 function App() {
   const [todos, setTodos] = useState([]);
   const [task, setTask] = useState("");
+  const [error, setError] = useState("");
 
-  // Função para carregar os todos da API
-  const fetchTodos = async () => {
-    const response = await axios.get('http://localhost:5000/todos');
-    setTodos(response.data);
+  // Executa uma chamada à API e exibe uma mensagem amigável em caso de falha
+  const callApi = async (action) => {
+    try {
+      setError("");
+      return await action();
+    } catch (err) {
+      setError("Não foi possível falar com a API. Tente novamente em instantes.");
+      return null;
+    }
   };
 
   // Função para adicionar uma nova tarefa
   const addTodo = async () => {
     if (task.trim()) {
-      const response = await axios.post('http://localhost:5000/todos', { text: task });
-      setTodos([...todos, response.data]);
-      setTask("");
+      const response = await callApi(() => axios.post(TODOS_URL, { text: task }));
+      if (response) {
+        setTodos([...todos, response.data]);
+        setTask("");
+      }
     }
   };
 
   // Função para marcar a tarefa como concluída
   const toggleComplete = async (id) => {
-    const response = await axios.patch(`http://localhost:5000/todos/${id}`);
-    const updatedTodos = todos.map(todo =>
-      todo._id === id ? response.data : todo
-    );
-    setTodos(updatedTodos);
+    const response = await callApi(() => axios.patch(`${TODOS_URL}/${id}`));
+    if (response) {
+      const updatedTodos = todos.map(todo =>
+        todo._id === id ? response.data : todo
+      );
+      setTodos(updatedTodos);
+    }
   };
 
   // Função para excluir a tarefa
   const deleteTodo = async (id) => {
-    await axios.delete(`http://localhost:5000/todos/${id}`);
-    setTodos(todos.filter(todo => todo._id !== id));
+    const response = await callApi(() => axios.delete(`${TODOS_URL}/${id}`));
+    if (response) {
+      setTodos(todos.filter(todo => todo._id !== id));
+    }
   };
 
   // Carregar a lista de todos ao iniciar o componente
   useEffect(() => {
+    const fetchTodos = async () => {
+      try {
+        const response = await axios.get(TODOS_URL);
+        setTodos(response.data);
+      } catch (err) {
+        setError("Não foi possível carregar as tarefas. Tente novamente em instantes.");
+      }
+    };
     fetchTodos();
   }, []);
 
@@ -53,6 +79,7 @@ function App() {
         />
         <button onClick={addTodo}>Adicionar</button>
       </div>
+      {error && <p className="error" role="alert">{error}</p>}
       <ul>
         {todos.map((todo) => (
           <li key={todo._id} style={{ textDecoration: todo.completed ? "line-through" : "none" }}>
