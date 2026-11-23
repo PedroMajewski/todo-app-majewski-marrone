@@ -1,39 +1,67 @@
-version: '3.8'
+# Execução local do ToDo App (desenvolvimento e ensaio).
+# Pré-requisito: copie .env.example para .env e defina as senhas.
+#
+#   cp .env.example .env
+#   docker compose up --build -d
+#
+# Interface e API no mesmo endereço: http://localhost (API em http://localhost/todos).
+# O MongoDB não é publicado no host; os dados ficam no volume nomeado "mongo-data".
+name: todo-app
 
 services:
   frontend:
     build:
       context: ./frontend  # Diretório do frontend
     ports:
-      - "80:80"  # Expõe a porta 80 do contêiner para a porta 80 do host
+      - "80:80"  # Única porta publicada: interface + proxy da API
+    environment:
+      API_UPSTREAM: api:5000
     networks:
       - todo-net
     depends_on:
-      - backend  # Garante que o backend esteja rodando antes de subir o frontend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
   backend:
     build:
       context: ./backend  # Diretório do backend
-    ports:
-      - "5000:5000"  # Expõe a porta 5000 do contêiner para a porta 5000 do host
+    environment:
+      MONGO_URI: "mongodb://${MONGO_APP_USERNAME:-todo_app}:${MONGO_APP_PASSWORD:?defina MONGO_APP_PASSWORD no arquivo .env}@mongo:27017/todo-app?authSource=admin"
+      APP_VERSION: local
     networks:
-      - todo-net
+      todo-net:
+        aliases:
+          - api  # Nome usado pelo Nginx para encaminhar /todos
     depends_on:
-      - mongo  # Garante que o MongoDB esteja rodando antes de iniciar o backend
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
 
   mongo:
     build:
-      context: ./banco-de-dados  # Diretório do backend
+      context: ./banco-de-dados  # Diretório do banco
     container_name: mongo-todo
-    ports:
-      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?defina MONGO_ROOT_PASSWORD no arquivo .env}
+      MONGO_INITDB_DATABASE: todo-app
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-todo_app}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?defina MONGO_APP_PASSWORD no arquivo .env}
+    volumes:
+      - mongo-data:/data/db  # Volume nomeado: os dados sobrevivem a "docker compose down"
     networks:
       - todo-net
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=root
-      - MONGO_INITDB_ROOT_PASSWORD=rootpassword
-      - MONGO_INITDB_DATABASE=todo-app
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
 
+volumes:
+  mongo-data:
 
 networks:
   todo-net:
