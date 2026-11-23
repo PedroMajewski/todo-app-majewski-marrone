@@ -1,0 +1,176 @@
+name: CI
+
+# Validação a cada push/PR e antes de cada release (workflow_call):
+# testes da API (com MongoDB real) e do frontend, build das imagens, Terraform
+# (fmt/validate), Ansible (lint/syntax-check) e lint dos workflows e scripts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.17.2"
+  NODE_VERSION: "22"
+
+jobs:
+  api:
+    name: API · testes de integração
+    runs-on: ubuntu-24.04
+    services:
+      mongo:
+        image: mongo:8.0.38
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping: 1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testes (fluxo completo com MongoDB)
+        run: npm test
+        env:
+          MONGO_URI_TEST: mongodb://127.0.0.1:27017/todo-app-ci
+
+  frontend:
+    name: Frontend · testes e build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Testes
+        run: npm test
+
+      - name: Build de produção
+        run: npm run build
+
+  images:
+    name: Imagem ${{ matrix.image }} · build (sem publicar)
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - image: todo-api
+            context: backend
+          - image: todo-frontend
+            context: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          build-args: APP_VERSION=ci-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  terraform:
+    name: Terraform · fmt e validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Formatação
+        run: terraform -chdir=terraform fmt -check -recursive -diff
+
+      - name: Init (sem backend)
+        run: terraform -chdir=terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform -chdir=terraform validate
+
+  ansible:
+    name: Ansible · lint e syntax-check
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: ansible
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ansible/requirements.txt
+
+      - name: Instalar Ansible e ansible-lint
+        run: pip install -r requirements.txt
+
+      - name: Inventário de exemplo (para o syntax-check)
+        run: |
+          cat > "$RUNNER_TEMP/tf.json" <<'EOF'
+          {"environment":{"value":"dev"},"app_fqdn":{"value":"1-2-3-4.sslip.io"},"app_url":{"value":"https://1-2-3-4.sslip.io"},
+           "app_public_ip":{"value":"1.2.3.4"},"app_private_ip":{"value":"10.20.1.10"},"db_private_ip":{"value":"10.20.2.10"},
+           "mongo_data_volume_id":{"value":"vol-0"},"backup_bucket":{"value":"b"},"backup_prefix":{"value":"dev"},
+           "aws_region":{"value":"us-east-1"},"ssh_user":{"value":"ubuntu"},"app_vm_name":{"value":"app"},"db_vm_name":{"value":"db"}}
+          EOF
+          python3 inventory/generate_inventory.py "$RUNNER_TEMP/tf.json" > inventory/hosts.yml
+          ansible-inventory --graph
+
+      - name: Syntax-check
+        run: |
+          ansible-playbook playbook.yml --syntax-check
+          ansible-playbook ops.yml --syntax-check -e operation=status
+
+      - name: ansible-lint (perfil production)
+        run: ansible-lint
+
+  lint:
+    name: Workflows e scripts · actionlint e shellcheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar actionlint e shellcheck
+        run: pip install actionlint-py==1.7.12.25 shellcheck-py==0.11.0.1
+
+      - name: shellcheck
+        run: shellcheck .github/scripts/*.sh bootstrap/*.sh
+
+      - name: actionlint
+        run: actionlint
