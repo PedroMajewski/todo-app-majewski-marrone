@@ -1,2 +1,14 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Scripts, templates e configurações executados no Linux (VMs e runners):
+# sempre LF, mesmo em checkout no Windows
+*.sh text eol=lf
+*.j2 text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.tf text eol=lf
+*.tfvars text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.template text eol=lf

@@ -8,3 +8,18 @@ data/
 *.log
 .DS_Store
 Thumbs.db
+
+# Terraform (state fica no S3; planos e diretório local não são versionados)
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+plan.txt
+crash.log
+
+# Inventário gerado pela pipeline
+ansible/inventory/hosts.yml
+
+# Chaves SSH geradas localmente
+pm04_deployer
+pm04_deployer.pub
