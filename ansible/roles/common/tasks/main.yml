@@ -1,0 +1,118 @@
+---
+- name: Aguardar o fim da inicialização da VM (cloud-init)
+  ansible.builtin.command: cloud-init status --wait
+  register: common_cloud_init
+  changed_when: false
+  failed_when: common_cloud_init.rc not in [0, 2]
+
+- name: Desativar as atualizações automáticas do Ubuntu (controladas pela pipeline)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+    - unattended-upgrades.service
+  when: common_disable_auto_updates | bool
+
+- name: Atualizar o índice de pacotes (apt update)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 300
+  changed_when: false
+
+- name: Normalizar a lista de pacotes adicionais (parâmetro extra_packages)
+  ansible.builtin.set_fact:
+    common_extra_packages: >-
+      {{ (extra_packages.split(',') if extra_packages is string else extra_packages)
+         | map('trim') | reject('equalto', '') | list }}
+
+- name: Validar os nomes dos pacotes adicionais
+  ansible.builtin.assert:
+    that: item is match('^[a-z0-9][a-z0-9.+-]*$')
+    fail_msg: "Nome de pacote inválido em extra_packages: {{ item }}"
+    quiet: true
+  loop: "{{ common_extra_packages }}"
+
+- name: Instalar pacotes base e adicionais
+  ansible.builtin.apt:
+    name: "{{ common_base_packages + common_extra_packages }}"
+    state: present
+    lock_timeout: 300
+
+- name: Informar pacotes adicionais solicitados
+  ansible.builtin.debug:
+    msg: "Pacotes adicionais: {{ common_extra_packages | join(', ') if common_extra_packages else 'nenhum' }}"
+
+- name: Definir o fuso horário
+  community.general.timezone:
+    name: "{{ system_timezone }}"
+
+- name: Diretório de fatos locais (versões implantadas)
+  ansible.builtin.file:
+    path: "{{ facts_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Verificar o arquivo de swap
+  ansible.builtin.stat:
+    path: "{{ common_swap_file }}"
+  register: common_swap_stat
+
+- name: Criar memória de swap (folga para VMs pequenas)
+  when:
+    - not common_swap_stat.stat.exists
+    - common_swap_size_mb | int > 0
+  block:
+    - name: Alocar o arquivo de swap
+      ansible.builtin.command: "fallocate -l {{ common_swap_size_mb }}M {{ common_swap_file }}"
+      changed_when: true
+
+    - name: Restringir as permissões do swap
+      ansible.builtin.file:
+        path: "{{ common_swap_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Formatar o swap
+      ansible.builtin.command: "mkswap {{ common_swap_file }}"
+      changed_when: true
+
+    - name: Ativar o swap
+      ansible.builtin.command: "swapon {{ common_swap_file }}"
+      changed_when: true
+
+- name: Manter o swap ativo após reinícios
+  ansible.posix.mount:
+    path: none
+    src: "{{ common_swap_file }}"
+    fstype: swap
+    opts: sw
+    state: present
+  when: common_swap_size_mb | int > 0
+
+- name: Reduzir o uso de swap
+  ansible.posix.sysctl:
+    name: vm.swappiness
+    value: "10"
+    sysctl_set: true
+    state: present
+
+- name: Endurecer o SSH (somente chave, sem login de root)
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/90-todo-hardening.conf
+    content: |
+      # Gerenciado pelo Ansible (ToDo App)
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Recarregar SSH

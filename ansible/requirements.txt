@@ -1,0 +1,4 @@
+# Versões fixas usadas pela pipeline (o pacote "ansible" inclui as coleções
+# community.docker, community.general e ansible.posix).
+ansible==11.13.0
+ansible-lint==26.11.0

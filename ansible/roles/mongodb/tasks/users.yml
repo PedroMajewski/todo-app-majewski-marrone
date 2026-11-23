@@ -1,0 +1,28 @@
+---
+# Usa a credencial de root já presente no container (variáveis MONGO_INITDB_*),
+# sem passar senhas na linha de comando. Mostra criado/atualizado/inalterado.
+- name: Criar ou atualizar os usuários da aplicação e de backup
+  community.docker.docker_container_exec:
+    container: "{{ mongo_container_name }}"
+    argv:
+      - mongosh
+      - --quiet
+      - --norc
+      - mongodb://127.0.0.1:27017/admin
+      - --eval
+      - >-
+        db.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);
+        load('/docker-entrypoint-initdb.d/00-create-users.js')
+    env:
+      TODO_DB_NAME: "{{ mongo_db_name }}"
+      MONGO_APP_USERNAME: "{{ mongo_app_username }}"
+      MONGO_APP_PASSWORD: "{{ mongo_app_password }}"
+      MONGO_BACKUP_USERNAME: "{{ mongo_backup_username }}"
+      MONGO_BACKUP_PASSWORD: "{{ mongo_backup_password }}"
+  register: mongodb_users
+  changed_when: "'criado' in mongodb_users.stdout or 'atualizado' in mongodb_users.stdout"
+  no_log: true
+
+- name: Resultado da configuração dos usuários
+  ansible.builtin.debug:
+    msg: "{{ mongodb_users.stdout_lines | select('search', 'Usuário') | list }}"

@@ -1,0 +1,95 @@
+---
+- name: Diretórios de scripts e configuração do MongoDB
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ mongo_initdb_dir }}", mode: "0755" }
+    - { path: "{{ mongo_conf_dir }}", mode: "0700" }
+
+- name: Copiar os scripts de inicialização (usuários e dados de demonstração)
+  ansible.builtin.copy:
+    src: "{{ mongodb_scripts_src }}/{{ item }}"
+    dest: "{{ mongo_initdb_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - 00-create-users.js
+    - init-mongo.js
+
+- name: Definir a versão do MongoDB (parâmetro, versão em execução ou padrão)
+  ansible.builtin.set_fact:
+    mongodb_current_version: "{{ ansible_local.todo_db.mongo_version | default('') }}"
+    mongodb_version: >-
+      {{ mongo_version if (mongo_version | string | length > 0)
+         else (ansible_local.todo_db.mongo_version | default(mongo_version_default, true)) }}
+
+- name: Validar a versão do MongoDB
+  ansible.builtin.assert:
+    that: mongodb_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+    fail_msg: "Versão do MongoDB inválida: '{{ mongodb_version }}'. Use uma tag explícita, ex.: 8.0.38"
+    quiet: true
+
+- name: Informar a versão em execução e a solicitada
+  ansible.builtin.debug:
+    msg: "MongoDB em execução: {{ mongodb_current_version | default('nenhuma', true) }} | solicitada: {{ mongodb_version }}"
+
+- name: Backup de segurança antes de trocar a versão do MongoDB
+  ansible.builtin.command:
+    cmd: /usr/local/bin/todo-mongo-backup pre-atualizacao
+    removes: /usr/local/bin/todo-mongo-backup
+  when:
+    - mongodb_current_version | length > 0
+    - mongodb_current_version != mongodb_version
+
+# A porta 27017 é publicada somente no IP privado da VM (rede privada da VPC).
+- name: Container do MongoDB
+  community.docker.docker_container:
+    name: "{{ mongo_container_name }}"
+    image: "mongo:{{ mongodb_version }}"
+    pull: "{{ 'always' if pull_images | bool else 'missing' }}"
+    recreate: "{{ recreate_containers | bool }}"
+    state: started
+    restart_policy: unless-stopped
+    env:
+      MONGO_INITDB_ROOT_USERNAME: "{{ mongo_root_username }}"
+      MONGO_INITDB_ROOT_PASSWORD: "{{ mongo_root_password }}"
+      MONGO_INITDB_DATABASE: "{{ mongo_db_name }}"
+      TODO_DB_NAME: "{{ mongo_db_name }}"
+    published_ports:
+      - "{{ db_private_ip }}:27017:27017"
+    volumes:
+      - "{{ mongo_data_mount }}/db:/data/db"
+      - "{{ mongo_initdb_dir }}:/docker-entrypoint-initdb.d:ro"
+      - "{{ mongo_conf_dir }}:/etc/todo-backup:ro"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+  register: mongodb_container
+  no_log: true
+
+- name: Resultado do container do MongoDB
+  ansible.builtin.debug:
+    msg: "Container {{ mongo_container_name }} (mongo:{{ mongodb_version }}): {{ 'criado/atualizado' if mongodb_container.changed else 'sem alterações' }}"
+
+- name: Aguardar o MongoDB ficar saudável
+  ansible.builtin.import_role:
+    name: docker
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_container: "{{ mongo_container_name }}"
+
+- name: Registrar a versão implantada do MongoDB (fato local)
+  ansible.builtin.copy:
+    dest: "{{ facts_dir }}/todo_db.fact"
+    content: "{{ {'mongo_version': mongodb_version} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0644"

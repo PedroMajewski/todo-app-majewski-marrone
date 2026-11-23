@@ -1,0 +1,4 @@
+---
+mongodb_uid: 999          # usuário "mongodb" dentro da imagem oficial
+mongodb_fs_type: ext4
+mongodb_scripts_src: "{{ playbook_dir }}/../banco-de-dados"

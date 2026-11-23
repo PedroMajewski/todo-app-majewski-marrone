@@ -1,0 +1,17 @@
+---
+common_base_packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - unzip
+  - htop
+  - dnsutils
+  - netcat-openbsd
+  - python3-requests
+  - python3-debian
+common_swap_file: /swapfile
+common_swap_size_mb: 1024
+# As atualizações automáticas do Ubuntu são desligadas: o SO é atualizado de
+# forma controlada pela pipeline (parâmetro update_os).
+common_disable_auto_updates: true

@@ -1,0 +1,28 @@
+---
+# Rotinas operacionais, executadas pela pipeline ops.yml do GitHub Actions.
+#   operation: status | logs | restart | backup | restore-test | restore | reset-demo-list
+#   target:    app | db | all            (status, logs, restart)
+#   service:   nome do container ou all  (logs, restart)
+#   log_lines: quantidade de linhas de log
+#   backup_key: arquivo do backup ou latest (restore-test, restore)
+#   recreate_containers: true recria o(s) container(s) mantendo os volumes (restart)
+
+- name: "Operação: {{ operation | default('status') }}"
+  hosts: "{{ 'db' if (operation | default('status')) in ['backup', 'restore-test', 'restore', 'reset-demo-list'] else (target | default('all')) }}"
+  become: true
+  gather_facts: true
+  gather_subset: [min]
+  vars:
+    ops_operations: [status, logs, restart, backup, restore-test, restore, reset-demo-list]
+    ops_service: "{{ service | default('all') }}"
+    ops_log_lines: "{{ log_lines | default(100) }}"
+    ops_backup_key: "{{ backup_key | default('latest', true) }}"
+  tasks:
+    - name: Validar a operação solicitada
+      ansible.builtin.assert:
+        that: operation in ops_operations
+        fail_msg: "Operação inválida: {{ operation }}. Use: {{ ops_operations | join(', ') }}"
+        quiet: true
+
+    - name: Executar a operação
+      ansible.builtin.include_tasks: "tasks/ops/{{ operation }}.yml"

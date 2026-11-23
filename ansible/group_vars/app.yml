@@ -1,0 +1,8 @@
+---
+# VM da aplicação: Caddy (HTTPS) -> Nginx/React -> API Express
+app_dir: /opt/todo
+app_network: todo-net
+api_container_name: todo-api
+frontend_container_name: todo-frontend
+caddy_container_name: todo-caddy
+caddy_image: caddy:2.11.9-alpine

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Restauração NO BANCO DA DEMONSTRAÇÃO: substitui as tarefas atuais pelas do
+# backup escolhido. Antes, faz um backup de segurança (motivo pre-restauracao).
+# Uso: todo-mongo-restore <arquivo.archive.gz | latest>
+set -euo pipefail
+
+KEY="${1:?Informe o nome do backup (arquivo .archive.gz) ou latest}"
+CONTAINER="{{ mongo_container_name }}"
+BUCKET="{{ backup_bucket }}"
+PREFIX="{{ backup_prefix }}"
+WORK="{{ backup_local_dir }}/restore"
+export AWS_DEFAULT_REGION="{{ aws_region }}"
+
+if [ "$KEY" = "latest" ]; then
+  KEY="$(aws s3 ls "s3://${BUCKET}/${PREFIX}/" | awk '{print $4}' | grep -E '\.archive\.gz$' | sort | tail -n 1 || true)"
+fi
+[ -n "$KEY" ] || { echo "[restore] nenhum backup encontrado" >&2; exit 1; }
+
+echo "[restore] backup escolhido: ${KEY}"
+/usr/local/bin/todo-mongo-backup pre-restauracao
+
+mkdir -p "$WORK"
+aws s3 cp "s3://${BUCKET}/${PREFIX}/${KEY}" "$WORK/backup.archive.gz" --only-show-errors
+docker cp "$WORK/backup.archive.gz" "${CONTAINER}:/tmp/restore.archive.gz"
+docker exec "$CONTAINER" mongorestore \
+  --host 127.0.0.1 --port 27017 \
+  --username "{{ mongo_backup_username }}" --authenticationDatabase admin \
+  --config /etc/todo-backup/mongodump.yml \
+  --archive=/tmp/restore.archive.gz --gzip --drop --nsInclude "{{ mongo_db_name }}.*" 2>&1 | tail -n 3
+docker exec "$CONTAINER" rm -f /tmp/restore.archive.gz
+rm -f "$WORK/backup.archive.gz"
+
+COUNT="$(docker exec "$CONTAINER" mongosh --quiet --norc mongodb://127.0.0.1:27017/admin --eval \
+  "db.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD); print(db.getSiblingDB('{{ mongo_db_name }}').todos.countDocuments())" | tail -n 1)"
+echo "[restore] concluído: ${COUNT} tarefa(s) no banco da demonstração"

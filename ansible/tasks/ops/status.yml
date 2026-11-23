@@ -1,0 +1,67 @@
+---
+- name: Containers da VM
+  ansible.builtin.command:
+    argv: [docker, ps, -a, --format, "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"]
+  register: ops_ps
+  changed_when: false
+
+- name: Uso de disco, memória e tempo ligado
+  ansible.builtin.shell: |
+    set -o pipefail
+    uptime
+    free -h | head -n 2
+    df -h / {{ mongo_data_mount | default('') }} 2>/dev/null
+  args:
+    executable: /bin/bash
+  register: ops_resources
+  changed_when: false
+
+- name: Saúde da aplicação (Nginx -> API -> MongoDB)
+  community.docker.docker_container_exec:
+    container: "{{ frontend_container_name }}"
+    argv: [wget, -q, -O, "-", "http://127.0.0.1/health"]
+  register: ops_app_health
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['app']
+
+- name: Saúde do MongoDB e quantidade de tarefas
+  community.docker.docker_container_exec:
+    container: "{{ mongo_container_name }}"
+    argv:
+      - mongosh
+      - --quiet
+      - --norc
+      - mongodb://127.0.0.1:27017/admin
+      - --eval
+      - >-
+        db.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);
+        print('ping=' + db.adminCommand('ping').ok + ' versao=' + db.version()
+        + ' tarefas=' + db.getSiblingDB('{{ mongo_db_name }}').todos.countDocuments())
+  register: ops_db_health
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['db']
+
+- name: Agendamento e último backup
+  ansible.builtin.shell: |
+    set -o pipefail
+    systemctl list-timers todo-mongo-backup.timer --no-pager | head -n 2
+    journalctl -u todo-mongo-backup.service -n 3 --no-pager -o cat || true
+  args:
+    executable: /bin/bash
+  register: ops_backup_status
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname in groups['db']
+
+- name: Situação da VM
+  ansible.builtin.debug:
+    msg:
+      - "VM: {{ inventory_hostname }} | ambiente {{ env_name }} | {{ app_url }}"
+      - "Versões implantadas: {{ ansible_local | default({}) }}"
+      - "{{ ops_ps.stdout_lines }}"
+      - "{{ ops_resources.stdout_lines }}"
+      - "Aplicação: {{ ops_app_health.stdout | default('n/a') }}"
+      - "MongoDB: {{ ops_db_health.stdout_lines | default(['n/a']) | last }}"
+      - "{{ ops_backup_status.stdout_lines | default([]) }}"

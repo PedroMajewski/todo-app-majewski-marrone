@@ -1,0 +1,33 @@
+---
+- name: Listar os containers da VM
+  ansible.builtin.command:
+    argv: [docker, ps, -a, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+  register: ops_containers
+  changed_when: false
+
+- name: Últimas linhas de log dos containers
+  ansible.builtin.command:
+    argv: [docker, logs, --timestamps, --tail, "{{ ops_log_lines }}", "{{ item }}"]
+  register: ops_logs
+  changed_when: false
+  loop: "{{ ops_containers.stdout_lines | select('in', [ops_service]) | list if ops_service != 'all' else ops_containers.stdout_lines }}"
+
+- name: Logs
+  ansible.builtin.debug:
+    msg: "{{ ['===== ' ~ item.item ~ ' ====='] + item.stdout_lines + item.stderr_lines }}"
+  loop: "{{ ops_logs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Logs do serviço de backup
+  ansible.builtin.command: journalctl -u todo-mongo-backup.service -n {{ ops_log_lines }} --no-pager -o short-iso
+  register: ops_backup_logs
+  changed_when: false
+  when:
+    - inventory_hostname in groups['db']
+    - ops_service in ['all', 'backup']
+
+- name: Logs do backup
+  ansible.builtin.debug:
+    msg: "{{ ops_backup_logs.stdout_lines }}"
+  when: ops_backup_logs is not skipped

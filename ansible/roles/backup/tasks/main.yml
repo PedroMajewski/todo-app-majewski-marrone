@@ -1,0 +1,86 @@
+---
+- name: Verificar se a AWS CLI v2 está instalada
+  ansible.builtin.stat:
+    path: /usr/local/bin/aws
+  register: backup_awscli
+
+- name: Instalar a AWS CLI v2 (envio e download dos backups no S3)
+  when: not backup_awscli.stat.exists
+  block:
+    - name: Baixar o instalador oficial da AWS CLI v2
+      ansible.builtin.get_url:
+        url: "{{ backup_aws_cli_url }}"
+        dest: /tmp/awscliv2.zip
+        mode: "0644"
+
+    - name: Descompactar o instalador
+      ansible.builtin.unarchive:
+        src: /tmp/awscliv2.zip
+        dest: /tmp
+        remote_src: true
+
+    - name: Executar o instalador
+      ansible.builtin.command: /tmp/aws/install --update
+      changed_when: true
+
+- name: Credencial do usuário de backup (lida apenas pelo mongodump/mongorestore)
+  ansible.builtin.copy:
+    dest: "{{ mongo_conf_dir }}/mongodump.yml"
+    content: "password: \"{{ mongo_backup_password }}\"\n"
+    owner: root
+    group: root
+    mode: "0400"
+  no_log: true
+
+- name: Diretório local dos backups
+  ansible.builtin.file:
+    path: "{{ backup_local_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Scripts de backup, restauração e preparação da demonstração
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop: "{{ backup_scripts }}"
+
+- name: Serviço e agendamento do backup (systemd)
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - todo-mongo-backup.service
+    - todo-mongo-backup.timer
+  notify: Recarregar systemd
+
+- name: Aplicar alterações do systemd
+  ansible.builtin.meta: flush_handlers
+
+- name: Ativar o agendamento automático de backups
+  ansible.builtin.systemd_service:
+    name: todo-mongo-backup.timer
+    enabled: true
+    state: started
+
+# Executa um backup logo na primeira configuração para validar o acesso ao S3.
+- name: Primeiro backup (somente se nenhum backup foi concluído nesta VM)
+  ansible.builtin.command:
+    cmd: /usr/local/bin/todo-mongo-backup inicial
+    creates: "{{ backup_local_dir }}/.ultimo-backup-ok"
+
+- name: Próxima execução agendada do backup
+  ansible.builtin.command: systemctl list-timers todo-mongo-backup.timer --no-pager  # noqa: command-instead-of-module
+  register: backup_timer
+  changed_when: false
+
+- name: Informar o agendamento do backup
+  ansible.builtin.debug:
+    msg: "{{ backup_timer.stdout_lines }}"

@@ -1,0 +1,4 @@
+---
+containers_registry_host: "{{ image_registry.split('/') | first }}"
+containers_api_image: "{{ image_registry }}/todo-api"
+containers_frontend_image: "{{ image_registry }}/todo-frontend"

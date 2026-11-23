@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Backup do MongoDB do ToDo App (ambiente {{ env_name }}):
+# mongodump compactado + metadados (quantidade de tarefas, sha256) -> S3.
+# Uso: todo-mongo-backup [motivo]
+#      motivo: agendado | manual | inicial | pre-atualizacao | pre-restauracao | pre-reset | pre-destroy
+set -euo pipefail
+
+REASON="${1:-manual}"
+CONTAINER="{{ mongo_container_name }}"
+BUCKET="{{ backup_bucket }}"
+PREFIX="{{ backup_prefix }}"
+LOCAL_DIR="{{ backup_local_dir }}"
+KEEP_LOCAL="{{ backup_keep_local }}"
+export AWS_DEFAULT_REGION="{{ aws_region }}"
+
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+NAME="todo-{{ env_name }}-${TS}-${REASON}.archive.gz"
+FILE="${LOCAL_DIR}/${NAME}"
+
+mkdir -p "$LOCAL_DIR"
+echo "[backup] iniciando ${NAME}"
+
+docker exec "$CONTAINER" mongodump \
+  --host 127.0.0.1 --port 27017 \
+  --username "{{ mongo_backup_username }}" --authenticationDatabase admin \
+  --config /etc/todo-backup/mongodump.yml \
+  --db "{{ mongo_db_name }}" --archive --gzip > "$FILE" 2> "${FILE}.log"
+
+TODOS="$(grep -oE 'done dumping [^ ]+\.todos \([0-9]+ documents?\)' "${FILE}.log" | grep -oE '[0-9]+' | tail -n 1 || true)"
+TODOS="${TODOS:-0}"
+BYTES="$(stat -c %s "$FILE")"
+SHA256="$(sha256sum "$FILE" | cut -d' ' -f1)"
+IMAGE="$(docker inspect "$CONTAINER" | jq -r '.[0].Config.Image')"
+
+jq -n --arg file "$NAME" --arg env "{{ env_name }}" --arg created "$TS" --arg reason "$REASON" \
+  --argjson todos "$TODOS" --argjson bytes "$BYTES" --arg sha "$SHA256" --arg image "$IMAGE" \
+  '{file: $file, environment: $env, created_at: $created, reason: $reason, todos: $todos, bytes: $bytes, sha256: $sha, mongo_image: $image}' \
+  > "${FILE}.json"
+
+aws s3 cp "$FILE" "s3://${BUCKET}/${PREFIX}/${NAME}" --only-show-errors
+aws s3 cp "${FILE}.json" "s3://${BUCKET}/${PREFIX}/${NAME}.json" --only-show-errors
+
+# Retenção local: mantém as cópias mais recentes na VM (o S3 tem retenção própria).
+find "$LOCAL_DIR" -maxdepth 1 -name 'todo-*.archive.gz' -printf '%T@ %p\n' | sort -rn |
+  tail -n +"$((KEEP_LOCAL + 1))" | cut -d' ' -f2- | while read -r old; do
+    rm -f "$old" "${old}.json" "${old}.log"
+  done
+
+touch "${LOCAL_DIR}/.ultimo-backup-ok"
+echo "[backup] concluído: s3://${BUCKET}/${PREFIX}/${NAME} (${TODOS} tarefas, ${BYTES} bytes, sha256 ${SHA256})"

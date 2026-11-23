@@ -1,0 +1,46 @@
+---
+# Variáveis comuns às duas VMs.
+# Os valores abaixo são padrões: a pipeline sobrescreve os parâmetros da
+# execução (environment, update_os, extra_packages, versões das imagens...)
+# com um arquivo de variáveis gerado a partir dos inputs do workflow.
+
+# ---------------------------------------------------------------------------
+# Parâmetros da pipeline
+# ---------------------------------------------------------------------------
+update_os: false               # aplicar atualizações do sistema operacional
+reboot_if_required: true       # reiniciar a VM se a atualização exigir
+extra_packages: ""             # pacotes adicionais, separados por vírgula
+pull_images: false             # baixar novamente as imagens mesmo com a mesma tag
+recreate_containers: false     # recriar os containers mantendo os volumes
+
+app_version: ""                # versão da aplicação; vazio = manter a atual
+app_version_default: ""        # última tag v* do repositório (usada na 1ª implantação)
+mongo_version: ""              # versão do MongoDB; vazio = manter a atual
+mongo_version_default: "8.0.38"
+
+image_registry: ""             # ghcr.io/<dono-do-repositório>
+acme_email: ""                 # e-mail opcional para o Let's Encrypt
+
+# ---------------------------------------------------------------------------
+# Banco de dados
+# ---------------------------------------------------------------------------
+mongo_db_name: todo-app
+mongo_root_username: root
+mongo_app_username: todo_app
+mongo_backup_username: todo_backup
+
+# ---------------------------------------------------------------------------
+# Segredos: lidos das variáveis de ambiente do runner (GitHub Secrets).
+# Nunca ficam no repositório nem nos logs (tarefas com no_log).
+# ---------------------------------------------------------------------------
+mongo_root_password: "{{ lookup('ansible.builtin.env', 'MONGO_ROOT_PASSWORD') }}"
+mongo_app_password: "{{ lookup('ansible.builtin.env', 'MONGO_APP_PASSWORD') }}"
+mongo_backup_password: "{{ lookup('ansible.builtin.env', 'MONGO_BACKUP_PASSWORD') }}"
+registry_username: "{{ lookup('ansible.builtin.env', 'REGISTRY_USERNAME') }}"
+registry_password: "{{ lookup('ansible.builtin.env', 'REGISTRY_PASSWORD') }}"
+
+# ---------------------------------------------------------------------------
+# Sistema
+# ---------------------------------------------------------------------------
+system_timezone: America/Sao_Paulo
+facts_dir: /etc/ansible/facts.d

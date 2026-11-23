@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Teste de restauração em AMBIENTE ISOLADO (ACE-07): o backup é restaurado num
+# container temporário, sem rede e sem volume, e o resultado é conferido com
+# os metadados do backup. O banco da demonstração não é alterado.
+# Uso: todo-mongo-restore-test [arquivo.archive.gz | latest]
+set -euo pipefail
+
+KEY="${1:-latest}"
+BUCKET="{{ backup_bucket }}"
+PREFIX="{{ backup_prefix }}"
+WORK="{{ backup_local_dir }}/restore-test"
+TEST_CONTAINER="todo-mongo-restore-test"
+IMAGE="$(docker inspect {{ mongo_container_name }} | jq -r '.[0].Config.Image')"
+export AWS_DEFAULT_REGION="{{ aws_region }}"
+
+if [ "$KEY" = "latest" ]; then
+  KEY="$(aws s3 ls "s3://${BUCKET}/${PREFIX}/" | awk '{print $4}' | grep -E '\.archive\.gz$' | sort | tail -n 1 || true)"
+fi
+if [ -z "$KEY" ]; then
+  echo "[restore-test] nenhum backup encontrado em s3://${BUCKET}/${PREFIX}/" >&2
+  exit 1
+fi
+
+mkdir -p "$WORK"
+rm -f "$WORK/backup.archive.gz" "$WORK/meta.json"
+echo "[restore-test] baixando s3://${BUCKET}/${PREFIX}/${KEY}"
+aws s3 cp "s3://${BUCKET}/${PREFIX}/${KEY}" "$WORK/backup.archive.gz" --only-show-errors
+aws s3 cp "s3://${BUCKET}/${PREFIX}/${KEY}.json" "$WORK/meta.json" --only-show-errors || echo '{}' > "$WORK/meta.json"
+EXPECTED="$(jq -r '.todos // empty' "$WORK/meta.json")"
+EXPECTED_SHA="$(jq -r '.sha256 // empty' "$WORK/meta.json")"
+if [ -n "$EXPECTED_SHA" ]; then
+  echo "${EXPECTED_SHA}  $WORK/backup.archive.gz" | sha256sum -c --quiet
+  echo "[restore-test] integridade (sha256) conferida"
+fi
+
+docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true
+trap 'docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true' EXIT
+echo "[restore-test] iniciando container isolado ${TEST_CONTAINER} (${IMAGE}, --network none)"
+docker run -d --name "$TEST_CONTAINER" --network none "$IMAGE" >/dev/null
+
+for _ in $(seq 1 30); do
+  if docker exec "$TEST_CONTAINER" mongosh --quiet --eval "db.adminCommand('ping').ok" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
+docker cp "$WORK/backup.archive.gz" "${TEST_CONTAINER}:/tmp/backup.archive.gz"
+docker exec "$TEST_CONTAINER" mongorestore --archive=/tmp/backup.archive.gz --gzip 2>&1 | tail -n 3
+
+RESTORED="$(docker exec "$TEST_CONTAINER" mongosh --quiet --eval "db.getSiblingDB('{{ mongo_db_name }}').todos.countDocuments()")"
+echo "[restore-test] amostra das tarefas restauradas:"
+docker exec "$TEST_CONTAINER" mongosh --quiet --eval \
+  "db.getSiblingDB('{{ mongo_db_name }}').todos.find({}, {_id: 0, text: 1, completed: 1}).limit(5).forEach(t => print(' - ' + t.text + (t.completed ? ' [concluída]' : '')))"
+
+echo "[restore-test] backup: ${KEY}"
+echo "[restore-test] tarefas no backup: ${EXPECTED:-desconhecido} | tarefas restauradas: ${RESTORED}"
+if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$RESTORED" ]; then
+  echo "[restore-test] FALHA: quantidade restaurada diferente da registrada no backup" >&2
+  exit 1
+fi
+echo "[restore-test] OK: restauração conferida em ambiente isolado; banco da demonstração intacto"

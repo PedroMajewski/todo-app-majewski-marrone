@@ -1,0 +1,3 @@
+---
+os_updates_upgrade_type: dist
+os_updates_reboot_timeout: 600

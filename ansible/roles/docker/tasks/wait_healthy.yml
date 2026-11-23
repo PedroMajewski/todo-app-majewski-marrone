@@ -1,0 +1,15 @@
+---
+# Aguarda um container ficar "healthy" (ou apenas em execução, se não tiver
+# healthcheck). Uso:
+#   import_role: { name: docker, tasks_from: wait_healthy }
+#   vars: { docker_wait_container: <nome> }
+- name: "Aguardar o container ficar saudável: {{ docker_wait_container }}"
+  community.docker.docker_container_info:
+    name: "{{ docker_wait_container }}"
+  register: docker_wait_info
+  until: >-
+    docker_wait_info.exists
+    and docker_wait_info.container.State.Running
+    and (docker_wait_info.container.State.Health.Status | default('healthy')) == 'healthy'
+  retries: "{{ docker_wait_retries | default(36) }}"
+  delay: 5

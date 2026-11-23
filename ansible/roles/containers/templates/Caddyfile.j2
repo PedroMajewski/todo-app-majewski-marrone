@@ -1,0 +1,27 @@
+# {{ ansible_managed }}
+# Caddy: termina o HTTPS (certificado automático do Let's Encrypt, renovado
+# sozinho) e encaminha tudo ao Nginx do frontend, que serve a interface e
+# repassa /todos e /health para a API no mesmo endereço.
+{% if acme_email | length > 0 %}
+{
+	email {{ acme_email }}
+}
+{% endif %}
+
+{{ app_fqdn }} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy {{ frontend_container_name }}:80
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Acesso por HTTP pelo IP ou por outro nome: redireciona para o endereço oficial.
+http:// {
+	redir https://{{ app_fqdn }}{uri} permanent
+}

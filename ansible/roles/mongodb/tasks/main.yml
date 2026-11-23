@@ -1,0 +1,9 @@
+---
+- name: Preparar o volume persistente de dados
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Executar o MongoDB em container
+  ansible.builtin.import_tasks: container.yml
+
+- name: Configurar os usuários do banco
+  ansible.builtin.import_tasks: users.yml

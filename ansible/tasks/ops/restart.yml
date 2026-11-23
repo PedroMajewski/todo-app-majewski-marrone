@@ -1,0 +1,38 @@
+---
+# Reinício de serviços (não apaga dados). Com recreate_containers=true os
+# containers são recriados a partir da configuração do Ansible, mantendo os
+# volumes: evidência de persistência (ACE-05).
+- name: Recriar o container do MongoDB mantendo o volume de dados
+  ansible.builtin.include_role:
+    name: mongodb
+    tasks_from: container
+  when:
+    - recreate_containers | bool
+    - inventory_hostname in groups['db']
+    - ops_service in ['all', mongo_container_name]
+
+- name: Listar os containers da VM
+  ansible.builtin.command:
+    argv: [docker, ps, -a, --format, "{{ '{{' }}.Names{{ '}}' }}"]
+  register: ops_containers
+  changed_when: false
+
+- name: Reiniciar os containers
+  ansible.builtin.command:
+    argv: [docker, restart, "{{ item }}"]
+  changed_when: true
+  loop: "{{ ops_containers.stdout_lines | select('in', [ops_service]) | list if ops_service != 'all' else ops_containers.stdout_lines }}"
+  when: not (recreate_containers | bool and item == mongo_container_name | default(''))
+
+- name: Aguardar os containers ficarem saudáveis
+  ansible.builtin.include_role:
+    name: docker
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_container: "{{ ops_wait_item }}"
+  loop: "{{ ops_containers.stdout_lines | select('in', [ops_service]) | list if ops_service != 'all' else ops_containers.stdout_lines }}"
+  loop_control:
+    loop_var: ops_wait_item
+
+- name: Situação após o reinício
+  ansible.builtin.include_tasks: status.yml

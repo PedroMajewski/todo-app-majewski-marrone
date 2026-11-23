@@ -1,0 +1,74 @@
+---
+# Configuração completa do ambiente do ToDo App (executado pela pipeline após
+# o Terraform). Idempotente: uma nova execução com os mesmos parâmetros não
+# altera nada. Tags: base, os, docker, db, backup, app.
+
+- name: Validar segredos e parâmetros da execução
+  hosts: all
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Conferir se os segredos foram fornecidos pela pipeline
+      ansible.builtin.assert:
+        that:
+          - mongo_root_password | length >= 12
+          - mongo_app_password | length >= 12
+          - mongo_backup_password | length >= 12
+        fail_msg: >-
+          Defina os secrets MONGO_ROOT_PASSWORD, MONGO_APP_PASSWORD e
+          MONGO_BACKUP_PASSWORD (mínimo de 12 caracteres) no ambiente do GitHub.
+        quiet: true
+      run_once: true
+      no_log: true
+
+- name: Base das VMs (sistema operacional, pacotes e Docker)
+  hosts: all
+  become: true
+  roles:
+    - role: common
+      tags: [base]
+    - role: os_updates
+      tags: [base, os]
+    - role: docker
+      tags: [base, docker]
+
+- name: Banco de dados na VM exclusiva
+  hosts: db
+  become: true
+  roles:
+    - role: mongodb
+      tags: [db]
+    - role: backup
+      tags: [db, backup]
+
+- name: Aplicação (API, frontend e HTTPS)
+  hosts: app
+  become: true
+  roles:
+    - role: containers
+      tags: [app]
+
+- name: Resumo da execução
+  hosts: all
+  become: true
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Coletar as versões implantadas
+      ansible.builtin.setup:
+        gather_subset: [min]
+        filter: [ansible_local]
+
+    - name: Containers em execução
+      ansible.builtin.command:
+        argv: [docker, ps, --format, "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"]
+      register: summary_ps
+      changed_when: false
+      failed_when: false
+
+    - name: Resumo
+      ansible.builtin.debug:
+        msg:
+          - "Ambiente: {{ env_name }} | URL: {{ app_url }}"
+          - "Versões: {{ ansible_local | default({}) | dict2items | map(attribute='value') | list }}"
+          - "{{ summary_ps.stdout_lines | default([]) }}"

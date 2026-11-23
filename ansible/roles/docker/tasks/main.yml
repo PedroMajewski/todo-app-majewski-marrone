@@ -1,0 +1,74 @@
+---
+- name: Diretório das chaves de repositórios APT
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Baixar a chave GPG oficial do Docker
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configurar o repositório oficial do Docker
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: https://download.docker.com/linux/ubuntu
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: "{{ docker_apt_arch }}"
+    signed_by: /etc/apt/keyrings/docker.asc
+  register: docker_repository
+
+- name: Atualizar o índice de pacotes com o repositório do Docker
+  ansible.builtin.apt:
+    update_cache: true
+    lock_timeout: 300
+  when: docker_repository.changed  # noqa: no-handler
+
+- name: Instalar Docker Engine e plugin Compose (quando ainda não instalados)
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    lock_timeout: 300
+
+- name: Configurar o daemon do Docker (rotação de logs e live-restore)
+  ansible.builtin.template:
+    src: daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reiniciar Docker
+
+- name: Manter o Docker em execução e ativo no boot
+  ansible.builtin.systemd_service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Permitir que o usuário administrativo use o Docker
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop: "{{ docker_users }}"
+
+- name: Aplicar alterações pendentes do Docker
+  ansible.builtin.meta: flush_handlers
+
+- name: Consultar a versão do Docker Engine
+  ansible.builtin.command:
+    argv: [docker, version, --format, "{{ '{{' }}.Server.Version{{ '}}' }}"]
+  register: docker_server_version
+  changed_when: false
+
+- name: Informar a versão do Docker Engine
+  ansible.builtin.debug:
+    msg: "Docker Engine {{ docker_server_version.stdout }}"

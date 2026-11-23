@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Agendamento do backup do MongoDB do ToDo App ({{ env_name }})
+
+[Timer]
+OnCalendar={{ backup_schedule }}
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

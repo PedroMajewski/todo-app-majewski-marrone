@@ -1,0 +1,156 @@
+---
+- name: Definir a versão da aplicação (parâmetro, versão em execução ou última release)
+  ansible.builtin.set_fact:
+    containers_current_version: "{{ ansible_local.todo_app.app_version | default('') }}"
+    containers_previous_version: "{{ ansible_local.todo_app.previous_app_version | default('') }}"
+    containers_version: >-
+      {{ app_version if (app_version | string | length > 0)
+         else (ansible_local.todo_app.app_version | default(app_version_default, true)) }}
+
+- name: Validar os parâmetros da implantação
+  ansible.builtin.assert:
+    that:
+      - containers_version | length > 0
+      - image_registry | length > 0
+    fail_msg: >-
+      Nenhuma versão da aplicação para implantar. Publique uma release
+      (tag vX.Y.Z pelo workflow release.yml) ou informe o parâmetro app_version.
+    quiet: true
+
+- name: Informar a versão em execução e a solicitada
+  ansible.builtin.debug:
+    msg: "Aplicação em execução: {{ containers_current_version | default('nenhuma', true) }} | solicitada: {{ containers_version }}"
+
+- name: Diretórios da aplicação
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ app_dir }}"
+    - "{{ app_dir }}/caddy"
+
+- name: Rede Docker da aplicação
+  community.docker.docker_network:
+    name: "{{ app_network }}"
+
+- name: Variáveis de ambiente da API (credenciais fora do código e dos logs)
+  ansible.builtin.template:
+    src: api.env.j2
+    dest: "{{ app_dir }}/api.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Implantar a versão solicitada com retorno automático em caso de falha
+  block:
+    - name: Autenticar no registro de imagens (token temporário da pipeline)
+      community.docker.docker_login:
+        registry_url: "{{ containers_registry_host }}"
+        username: "{{ registry_username }}"
+        password: "{{ registry_password }}"
+      when: registry_password | length > 0
+      changed_when: false
+      no_log: true
+
+    - name: Implantar API e frontend
+      ansible.builtin.import_tasks: deploy.yml
+      vars:
+        containers_deploy_version: "{{ containers_version }}"
+
+  rescue:
+    - name: Informar a falha da implantação
+      ansible.builtin.debug:
+        msg: >-
+          A versão {{ containers_version }} não ficou saudável.
+          {{ 'Retornando para ' ~ containers_current_version
+             if containers_current_version not in ['', containers_version]
+             else 'Não há versão anterior para retorno.' }}
+
+    - name: Retornar para a versão anterior
+      ansible.builtin.import_tasks: deploy.yml
+      vars:
+        containers_deploy_version: "{{ containers_current_version }}"
+      when: containers_current_version not in ['', containers_version]
+
+    - name: Interromper a pipeline com erro
+      ansible.builtin.fail:
+        msg: >-
+          Falha ao implantar {{ containers_version }}.
+          {{ 'A versão ' ~ containers_current_version ~ ' foi restaurada.'
+             if containers_current_version not in ['', containers_version] else '' }}
+          Consulte os logs com a pipeline de operações (operation=logs).
+
+  always:
+    - name: Remover a credencial do registro da VM
+      community.docker.docker_login:
+        registry_url: "{{ containers_registry_host }}"
+        state: absent
+      when: registry_password | length > 0
+      changed_when: false
+
+- name: Configuração do Caddy (HTTPS)
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ app_dir }}/caddy/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Recarregar Caddy
+
+- name: Proxy HTTPS (Caddy), única porta publicada na internet
+  community.docker.docker_container:
+    name: "{{ caddy_container_name }}"
+    image: "{{ caddy_image }}"
+    pull: "{{ 'always' if pull_images | bool else 'missing' }}"
+    recreate: "{{ recreate_containers | bool }}"
+    state: started
+    restart_policy: unless-stopped
+    published_ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - "{{ app_dir }}/caddy:/etc/caddy:ro"
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - name: "{{ app_network }}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+- name: Aguardar o Caddy ficar saudável
+  ansible.builtin.import_role:
+    name: docker
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_container: "{{ caddy_container_name }}"
+
+- name: Aplicar a nova configuração do Caddy
+  ansible.builtin.meta: flush_handlers
+
+- name: Verificar o fluxo interno Nginx -> API -> MongoDB
+  community.docker.docker_container_exec:
+    container: "{{ frontend_container_name }}"
+    argv: [wget, -q, -O, "-", "http://127.0.0.1/health"]
+  register: containers_health
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: containers_health.rc == 0
+
+- name: Informar a saúde da aplicação
+  ansible.builtin.debug:
+    msg: "Saúde interna: {{ containers_health.stdout }} | URL pública: https://{{ app_fqdn }}"
+
+- name: Remover imagens sem uso (mantém a versão anterior para retorno)
+  community.docker.docker_prune:
+    images: true
+  changed_when: false

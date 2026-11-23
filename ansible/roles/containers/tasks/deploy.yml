@@ -1,0 +1,61 @@
+---
+# Implanta API e frontend na versão containers_deploy_version e aguarda as
+# verificações de saúde (a API só fica saudável se conectar ao MongoDB).
+- name: "Container da API {{ containers_deploy_version }}"
+  community.docker.docker_container:
+    name: "{{ api_container_name }}"
+    image: "{{ containers_api_image }}:{{ containers_deploy_version }}"
+    pull: "{{ 'always' if pull_images | bool else 'missing' }}"
+    recreate: "{{ recreate_containers | bool }}"
+    state: started
+    restart_policy: unless-stopped
+    env_file: "{{ app_dir }}/api.env"
+    networks:
+      - name: "{{ app_network }}"
+        aliases:
+          - api
+  register: containers_api
+  no_log: true
+
+- name: "Resultado do container da API {{ containers_deploy_version }}"
+  ansible.builtin.debug:
+    msg: "{{ api_container_name }}: {{ 'criado/atualizado' if containers_api.changed else 'sem alterações' }}"
+
+- name: Aguardar a API ficar saudável (inclui a conexão com o MongoDB)
+  ansible.builtin.import_role:
+    name: docker
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_container: "{{ api_container_name }}"
+
+- name: "Container do frontend {{ containers_deploy_version }}"
+  community.docker.docker_container:
+    name: "{{ frontend_container_name }}"
+    image: "{{ containers_frontend_image }}:{{ containers_deploy_version }}"
+    pull: "{{ 'always' if pull_images | bool else 'missing' }}"
+    recreate: "{{ recreate_containers | bool }}"
+    state: started
+    restart_policy: unless-stopped
+    env:
+      API_UPSTREAM: "api:5000"
+    networks:
+      - name: "{{ app_network }}"
+
+- name: Aguardar o frontend ficar saudável
+  ansible.builtin.import_role:
+    name: docker
+    tasks_from: wait_healthy
+  vars:
+    docker_wait_container: "{{ frontend_container_name }}"
+
+- name: Registrar a versão implantada (fato local usado no próximo retorno)
+  ansible.builtin.copy:
+    dest: "{{ facts_dir }}/todo_app.fact"
+    content: >-
+      {{ {'app_version': containers_deploy_version,
+          'previous_app_version': (containers_current_version
+            if containers_current_version not in ['', containers_deploy_version]
+            else containers_previous_version)} | to_nice_json }}
+    owner: root
+    group: root
+    mode: "0644"

@@ -1,0 +1,35 @@
+---
+# O volume EBS é identificado pelo ID (nome estável em /dev/disk/by-id),
+# independentemente da ordem dos discos NVMe na VM.
+- name: Definir o dispositivo do volume EBS de dados
+  ansible.builtin.set_fact:
+    mongodb_data_device: "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_{{ mongo_data_volume_id | replace('-', '') }}"
+
+- name: Aguardar o volume EBS ficar disponível na VM
+  ansible.builtin.wait_for:
+    path: "{{ mongodb_data_device }}"
+    timeout: 180
+
+# Formata apenas se o volume não tiver sistema de arquivos (dados existentes são
+# preservados) e expande o sistema de arquivos se o volume for aumentado.
+- name: Criar ou expandir o sistema de arquivos do volume de dados
+  community.general.filesystem:
+    dev: "{{ mongodb_data_device }}"
+    fstype: "{{ mongodb_fs_type }}"
+    resizefs: true
+
+- name: Montar o volume de dados
+  ansible.posix.mount:
+    path: "{{ mongo_data_mount }}"
+    src: "{{ mongodb_data_device }}"
+    fstype: "{{ mongodb_fs_type }}"
+    opts: defaults,nofail,noatime
+    state: mounted
+
+- name: Diretório de dados do MongoDB
+  ansible.builtin.file:
+    path: "{{ mongo_data_mount }}/db"
+    state: directory
+    owner: "{{ mongodb_uid }}"
+    group: "{{ mongodb_uid }}"
+    mode: "0750"

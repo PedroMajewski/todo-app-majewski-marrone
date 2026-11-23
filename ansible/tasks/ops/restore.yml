@@ -1,0 +1,10 @@
+---
+- name: Restaurar o backup no banco da demonstração (com backup de segurança antes)
+  ansible.builtin.command:
+    argv: [/usr/local/bin/todo-mongo-restore, "{{ ops_backup_key }}"]
+  register: ops_restore
+  changed_when: true
+
+- name: Resultado da restauração
+  ansible.builtin.debug:
+    msg: "{{ ops_restore.stdout_lines }}"

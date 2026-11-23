@@ -1,0 +1,10 @@
+---
+- name: Executar um backup agora
+  ansible.builtin.command:
+    argv: [/usr/local/bin/todo-mongo-backup, "{{ backup_reason | default('manual') }}"]
+  register: ops_backup
+  changed_when: true
+
+- name: Resultado do backup
+  ansible.builtin.debug:
+    msg: "{{ ops_backup.stdout_lines }}"

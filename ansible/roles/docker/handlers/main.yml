@@ -1,0 +1,6 @@
+---
+# live-restore mantém os containers rodando enquanto o daemon reinicia.
+- name: Reiniciar Docker
+  ansible.builtin.systemd_service:
+    name: docker
+    state: restarted

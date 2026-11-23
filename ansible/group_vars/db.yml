@@ -1,0 +1,9 @@
+---
+# VM exclusiva do MongoDB
+mongo_container_name: todo-mongo
+mongo_data_mount: /srv/mongo-data          # volume EBS persistente
+mongo_initdb_dir: /opt/todo-db/initdb      # scripts de usuários e dados de demonstração
+mongo_conf_dir: /opt/todo-db/conf          # credencial do usuário de backup (somente root)
+backup_local_dir: /srv/backups
+backup_schedule: "*-*-* 03,15:00:00"       # duas vezes ao dia (systemd OnCalendar)
+backup_keep_local: 3                       # cópias mantidas na VM (o S3 tem retenção própria)

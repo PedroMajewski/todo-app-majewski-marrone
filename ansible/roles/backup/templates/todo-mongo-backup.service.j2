@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Backup do MongoDB do ToDo App ({{ env_name }}) para o S3
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/todo-mongo-backup agendado
+Nice=10

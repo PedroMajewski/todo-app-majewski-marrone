@@ -1,0 +1,7 @@
+---
+backup_aws_cli_url: https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip
+backup_scripts:
+  - todo-mongo-backup
+  - todo-mongo-restore-test
+  - todo-mongo-restore
+  - todo-mongo-reset-demo

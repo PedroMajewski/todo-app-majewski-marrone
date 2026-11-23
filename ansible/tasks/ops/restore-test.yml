@@ -1,0 +1,10 @@
+---
+- name: Restaurar o backup em um container isolado e conferir
+  ansible.builtin.command:
+    argv: [/usr/local/bin/todo-mongo-restore-test, "{{ ops_backup_key }}"]
+  register: ops_restore_test
+  changed_when: false
+
+- name: Resultado do teste de restauração
+  ansible.builtin.debug:
+    msg: "{{ ops_restore_test.stdout_lines }}"

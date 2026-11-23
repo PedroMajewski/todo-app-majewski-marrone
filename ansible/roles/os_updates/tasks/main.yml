@@ -1,0 +1,37 @@
+---
+# Sempre verifica as atualizações disponíveis; aplica apenas com update_os=true.
+- name: Listar atualizações disponíveis do sistema operacional
+  ansible.builtin.command: apt list --upgradable
+  register: os_updates_pending
+  changed_when: false
+
+- name: Informar atualizações disponíveis
+  ansible.builtin.debug:
+    msg: >-
+      {{ os_updates_pending.stdout_lines | select('search', 'upgradable from') | list | length }}
+      pacote(s) com atualização disponível; update_os={{ update_os | bool }}
+
+- name: Aplicar as atualizações do sistema operacional
+  ansible.builtin.apt:
+    upgrade: "{{ os_updates_upgrade_type }}"
+    autoremove: true
+    lock_timeout: 300
+  register: os_updates_result
+  when: update_os | bool
+
+- name: Verificar se é necessário reiniciar a VM
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: os_updates_reboot_flag
+  when: update_os | bool
+
+# throttle: uma VM por vez, pois o acesso ao banco passa pela VM da aplicação.
+- name: Reiniciar a VM para concluir as atualizações
+  ansible.builtin.reboot:
+    msg: Reinicio apos atualizacao do sistema operacional (pipeline)
+    reboot_timeout: "{{ os_updates_reboot_timeout }}"
+  throttle: 1
+  when:
+    - update_os | bool
+    - reboot_if_required | bool
+    - os_updates_reboot_flag.stat.exists | default(false)

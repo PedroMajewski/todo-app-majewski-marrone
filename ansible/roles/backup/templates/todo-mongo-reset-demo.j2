@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Prepara uma lista nova para a apresentação (limpeza INTENCIONAL da lista
+# compartilhada): faz um backup de segurança e reinsere os dados de demonstração.
+set -euo pipefail
+
+CONTAINER="{{ mongo_container_name }}"
+
+/usr/local/bin/todo-mongo-backup pre-reset
+docker exec -e RESET_DEMO=true -e TODO_DB_NAME="{{ mongo_db_name }}" "$CONTAINER" \
+  mongosh --quiet --norc mongodb://127.0.0.1:27017/admin --eval \
+  "db.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD); load('/docker-entrypoint-initdb.d/init-mongo.js')"
+echo "[reset-demo] lista da demonstração preparada"

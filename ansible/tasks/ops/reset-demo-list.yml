@@ -1,0 +1,9 @@
+---
+- name: Preparar a lista da apresentação (backup de segurança + dados de demonstração)
+  ansible.builtin.command: /usr/local/bin/todo-mongo-reset-demo
+  register: ops_reset
+  changed_when: true
+
+- name: Resultado da preparação da lista
+  ansible.builtin.debug:
+    msg: "{{ ops_reset.stdout_lines }}"
