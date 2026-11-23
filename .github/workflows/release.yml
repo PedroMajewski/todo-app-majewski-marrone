@@ -1,0 +1,153 @@
+name: Release da aplicação
+
+# Entrega da aplicação: valida (CI completo), constrói e publica as imagens da
+# API e do frontend no GitHub Container Registry com versão identificável
+# (tag vX.Y.Z + sha do commit) e, opcionalmente, implanta em um ambiente.
+#
+# Formas de disparar:
+#   - git tag v1.0.0 && git push origin v1.0.0
+#   - Actions > Release da aplicação > Run workflow (informando a versão)
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão a publicar no formato vX.Y.Z (a tag é criada no commit selecionado se não existir)"
+        required: true
+        type: string
+      deploy_environment:
+        description: "Implantar a versão publicada em um ambiente existente"
+        type: choice
+        options: [nenhum, dev, homolog, prod]
+        default: nenhum
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Definir a versão
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Validar a versão
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = "push" ]; then VERSION="$REF_NAME"; else VERSION="$INPUT_VERSION"; fi
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Versão inválida '${VERSION}'. Use o formato vX.Y.Z (ex.: v1.0.0)."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "### Release ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: Validação
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    name: Publicar ${{ matrix.image }}
+    needs: [version, ci]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - image: todo-api
+            context: backend
+          - image: todo-frontend
+            context: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Login no GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags e rótulos da imagem
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.version }}
+            type=sha,prefix=sha-,format=short
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.version }}
+
+      - name: Build e push
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          build-args: APP_VERSION=${{ needs.version.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Registrar a imagem publicada
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "**${{ matrix.image }}**"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  github-release:
+    name: Tag e release no GitHub
+    needs: [version, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Criar a tag (execução manual) e a release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            git tag "$VERSION" "$GITHUB_SHA"
+            git push origin "refs/tags/${VERSION}"
+          fi
+          OWNER_LC="${OWNER,,}"
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release create "$VERSION" --verify-tag --generate-notes --title "ToDo App ${VERSION}" \
+              --notes "Imagens: ghcr.io/${OWNER_LC}/todo-api:${VERSION} e ghcr.io/${OWNER_LC}/todo-frontend:${VERSION}"
+          fi
+
+  deploy:
+    name: Implantar
+    needs: [version, github-release]
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_environment != 'nenhum'
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    uses: ./.github/workflows/deploy-app.yml
+    with:
+      environment: ${{ inputs.deploy_environment }}
+      app_version: ${{ needs.version.outputs.version }}
+    secrets: inherit

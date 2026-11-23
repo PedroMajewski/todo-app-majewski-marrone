@@ -1,0 +1,123 @@
+name: Deploy da aplicação
+
+# Implanta uma versão publicada da aplicação (API + frontend) num ambiente
+# existente, sem alterar a infraestrutura: Ansible com --tags app, que aguarda
+# os healthchecks e volta sozinho à versão anterior se a nova falhar.
+#
+# Retorno à versão anterior (rollback documentado): execute este workflow
+# informando a versão anterior em app_version (lista em Releases do GitHub).
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      app_version:
+        type: string
+        required: true
+      pull_images:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente de destino
+        type: choice
+        options: [dev, homolog, prod]
+        default: dev
+      app_version:
+        description: "Versão (tag vX.Y.Z) a implantar; para retornar, informe a versão anterior"
+        type: string
+        required: true
+      pull_images:
+        description: Baixar novamente as imagens mesmo com a mesma tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+
+env:
+  TF_VERSION: "1.17.2"
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.app_version }} em ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: infra-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validar a versão
+        env:
+          APP_VERSION: ${{ inputs.app_version }}
+        run: |
+          if [[ ! "$APP_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Versão inválida '${APP_VERSION}'. Use o formato vX.Y.Z."
+            exit 1
+          fi
+
+      - name: Acesso ao ambiente
+        id: access
+        uses: ./.github/actions/infra-access
+        with:
+          environment: ${{ inputs.environment }}
+          aws-role-arn: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          terraform-version: ${{ env.TF_VERSION }}
+
+      - name: Ambiente inexistente
+        if: steps.access.outputs.has_infra != 'true'
+        run: |
+          echo "::error::O ambiente ${{ inputs.environment }} não existe. Crie-o com o workflow Infraestrutura (action=apply)."
+          exit 1
+
+      - name: Implantar com Ansible (somente a aplicação)
+        working-directory: ansible
+        env:
+          ANSIBLE_FORCE_COLOR: "true"
+          APP_VERSION: ${{ inputs.app_version }}
+          PULL_IMAGES: ${{ inputs.pull_images }}
+          OWNER: ${{ github.repository_owner }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGO_ROOT_PASSWORD }}
+          MONGO_APP_PASSWORD: ${{ secrets.MONGO_APP_PASSWORD }}
+          MONGO_BACKUP_PASSWORD: ${{ secrets.MONGO_BACKUP_PASSWORD }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jq -n \
+            --arg app_version "$APP_VERSION" \
+            --argjson pull_images "$PULL_IMAGES" \
+            --arg image_registry "ghcr.io/${OWNER,,}" \
+            --arg acme_email "$ACME_EMAIL" \
+            '{app_version: $app_version, pull_images: $pull_images,
+              image_registry: $image_registry, acme_email: $acme_email}' > "$RUNNER_TEMP/ansible-vars.json"
+          ansible-playbook playbook.yml --tags app -e @"$RUNNER_TEMP/ansible-vars.json" | tee "$RUNNER_TEMP/ansible.log"
+          {
+            echo "### Ansible (deploy da aplicação ${APP_VERSION})"
+            echo '```'
+            sed -n '/PLAY RECAP/,$p' "$RUNNER_TEMP/ansible.log" | sed 's/\x1b\[[0-9;]*m//g' | head -n 8
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fechar o SSH do runner
+        if: always() && steps.access.outputs.security_group_id != ''
+        env:
+          SG_ID: ${{ steps.access.outputs.security_group_id }}
+        run: .github/scripts/ssh-access.sh close "$SG_ID"
+
+      - name: Testes de fumaça (de fora da AWS)
+        env:
+          APP_URL: ${{ steps.access.outputs.app_url }}
+          DB_IP: ${{ steps.access.outputs.db_public_ip }}
+          APP_IP: ${{ steps.access.outputs.app_public_ip }}
+        run: .github/scripts/smoke-test.sh "$APP_URL" "$DB_IP" "$APP_IP"
