@@ -44,6 +44,11 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
   ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
 
+# bash com -eo pipefail: falha em qualquer comando de um pipe falha o passo
+defaults:
+  run:
+    shell: bash
+
 jobs:
   deploy:
     name: Deploy ${{ inputs.app_version }} em ${{ inputs.environment }}
@@ -105,7 +110,7 @@ jobs:
           {
             echo "### Ansible (deploy da aplicação ${APP_VERSION})"
             echo '```'
-            sed -n '/PLAY RECAP/,$p' "$RUNNER_TEMP/ansible.log" | sed 's/\x1b\[[0-9;]*m//g' | head -n 8
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/ansible.log" | awk '/PLAY RECAP/ {show = 1} show && shown < 8 {print; shown++}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

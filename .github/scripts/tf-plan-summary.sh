@@ -35,7 +35,8 @@ TOTAL=$((CREATE + UPDATE + DELETE + REPLACE))
   echo "<details><summary>Saída completa do plan</summary>"
   echo ""
   echo '```'
-  sed -n '/Terraform will perform\|No changes\|Terraform used the selected/,$p' "$PLAN_TEXT" | head -n 400
+  awk '/Terraform will perform|No changes|Terraform used the selected/ {show = 1}
+       show && shown < 400 {print; shown++}' "$PLAN_TEXT"
   echo '```'
   echo "</details>"
 } >> "$SUMMARY"

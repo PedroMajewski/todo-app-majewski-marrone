@@ -62,6 +62,11 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
   ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
 
+# bash com -eo pipefail: falha em qualquer comando de um pipe falha o passo
+defaults:
+  run:
+    shell: bash
+
 jobs:
   operation:
     name: ${{ inputs.operation }} em ${{ inputs.environment }}

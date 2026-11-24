@@ -101,7 +101,7 @@ runs:
       shell: bash
       run: |
         pip install --quiet -r ansible/requirements.txt
-        ansible --version | head -n 1
+        ansible --version | sed -n 1p
 
     - name: Chave SSH e inventário do Ansible
       if: steps.outputs.outputs.has_infra == 'true'

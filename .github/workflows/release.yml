@@ -25,6 +25,11 @@ on:
 permissions:
   contents: read
 
+# bash com -eo pipefail: falha em qualquer comando de um pipe falha o passo
+defaults:
+  run:
+    shell: bash
+
 jobs:
   version:
     name: Definir a versão
