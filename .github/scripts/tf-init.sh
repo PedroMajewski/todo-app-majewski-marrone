@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ENVIRONMENT="${1:?Informe o ambiente (dev, homolog ou prod)}"
-REGION="${AWS_REGION:-us-east-1}"
+REGION="${AWS_REGION:-us-east-2}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 BUCKET="${TF_STATE_BUCKET:-todo-app-tfstate-${ACCOUNT_ID}}"
 

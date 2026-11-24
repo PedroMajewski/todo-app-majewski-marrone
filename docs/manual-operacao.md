@@ -21,11 +21,11 @@ Guia para a equipe e para os alunos operarem o ambiente **só pelas pipelines do
 
 ### 0.2 Conta AWS (AWS CloudShell)
 
-1. Entre no console da AWS e abra o **CloudShell** (ícone `>_` no topo), na região **us-east-1**.
+1. Entre no console da AWS e abra o **CloudShell** (ícone `>_` no topo), na região **US East (Ohio) us-east-2**.
 2. Envie o arquivo `bootstrap/aws-bootstrap.sh` (menu *Actions → Upload file*) ou clone o repositório, e execute:
 
    ```bash
-   bash aws-bootstrap.sh <seu-usuario>/todo-app-pm04 us-east-1
+   bash aws-bootstrap.sh <seu-usuario>/todo-app-pm04 us-east-2
    ```
 
    O script cria o bucket do Terraform State, o bucket de backups, o login OIDC do GitHub e a role da pipeline. No final ele mostra o valor de `AWS_ROLE_ARN`. Use exatamente o mesmo nome do repositório, com maiúsculas e minúsculas iguais às do GitHub.
@@ -47,7 +47,7 @@ Em **Settings → Secrets and variables → Actions**:
 | Tipo | Nome | Valor |
 |---|---|---|
 | Variable | `AWS_ROLE_ARN` | ARN mostrado pelo bootstrap |
-| Variable | `AWS_REGION` | `us-east-1` |
+| Variable | `AWS_REGION` | `us-east-2` |
 | Variable (opcional) | `ACME_EMAIL` | e-mail para avisos do Let's Encrypt |
 | Secret | `SSH_PRIVATE_KEY` | conteúdo de `pm04_deployer` |
 | Secret | `SSH_PUBLIC_KEY` | conteúdo de `pm04_deployer.pub` |
@@ -150,7 +150,7 @@ A rotina faz um backup de segurança, apaga as tarefas e reinsere as três taref
 
 **Resultado esperado:** backup final (`pre-destroy`), `terraform destroy` de todos os recursos e, no resumo, a lista do que **continua existindo** (backups e state no S3, com custo de centavos). Para recriar depois, basta rodar `action=apply` de novo.
 
-Remoção total ao fim do semestre: no CloudShell, `bash aws-bootstrap.sh <repo> us-east-1 --remover`.
+Remoção total ao fim do semestre: no CloudShell, `bash aws-bootstrap.sh <repo> us-east-2 --remover`.
 
 ---
 

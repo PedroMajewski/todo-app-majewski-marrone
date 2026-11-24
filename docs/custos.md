@@ -1,6 +1,6 @@
 # Estimativa de custos
 
-**Provedor:** AWS · **Região:** us-east-1 (Norte da Virgínia) · **Moeda:** dólar americano (US$)
+**Provedor:** AWS · **Região:** us-east-2 (Ohio), com preços iguais aos da us-east-1 para os recursos usados · **Moeda:** dólar americano (US$)
 **Data dos preços:** consultados em 23/11/2026 nas páginas oficiais listadas em [Fontes](#fontes) · **Mês de referência:** 730 horas
 
 ## 1. Recursos e preços unitários
@@ -63,7 +63,7 @@ O `destroy` da pipeline remove as VMs, o IP elástico, os volumes EBS, a VPC e a
 
 ## Fontes
 
-- Preços EC2 T3 (sob demanda, Linux, us-east-1): <https://aws.amazon.com/ec2/instance-types/t3/> e <https://aws.amazon.com/ec2/pricing/on-demand/>
+- Preços EC2 T3 (sob demanda, Linux): <https://aws.amazon.com/ec2/pricing/on-demand/> (selecione US East (Ohio)) e <https://aws.amazon.com/ec2/instance-types/t3/>; conferência para us-east-2: <https://www.doit.com/compute/spot/us-east-2/t3.small>
 - Cobrança de IPv4 público (US$ 0,005/h por IP): <https://aws.amazon.com/blogs/aws/new-aws-public-ipv4-address-charge-public-ip-insights/>
 - EBS gp3 (US$ 0,08/GB-mês): <https://aws.amazon.com/ebs/pricing/> e <https://aws.amazon.com/ebs/general-purpose/>
 - Transferência de dados (100 GB/mês gratuitos): <https://aws.amazon.com/about-aws/global-infrastructure/global-network/faqs>

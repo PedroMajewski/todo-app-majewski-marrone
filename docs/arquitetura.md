@@ -30,7 +30,7 @@ flowchart LR
     V[Visitantes<br/>navegador]
     GH[GitHub Actions<br/>runner]
   end
-  subgraph AWS["AWS · us-east-1 · VPC 10.20.0.0/16 (dev)"]
+  subgraph AWS["AWS · us-east-2 (Ohio) · VPC 10.20.0.0/16 (dev)"]
     subgraph SA["Sub-rede app 10.20.1.0/24"]
       APP["VM aplicação (t3.micro)<br/>Caddy :80/:443<br/>Nginx + React<br/>API Express :5000 (interna)"]
     end
@@ -72,7 +72,7 @@ flowchart LR
 
 | # | Decisão | Alternativas consideradas | Justificativa |
 |---|---|---|---|
-| D1 | **AWS**, região **us-east-1** | Azure for Students, GCP, sa-east-1 | Conta Free Tier disponível (créditos de US$ 100 a 200); provedor Terraform maduro; OIDC com GitHub; us-east-1 é a região mais barata, e a latência a partir do Brasil (~130 ms) é irrelevante para uma lista de tarefas |
+| D1 | **AWS**, região **us-east-2 (Ohio)** | Azure for Students, GCP, us-east-1, sa-east-1 | Conta Free Tier disponível (créditos de US$ 100 a 200); provedor Terraform maduro; OIDC com GitHub; us-east-2 é a região padrão do projeto na conta e tem o mesmo preço da us-east-1 (a mais barata) para t3, EBS e IPv4; a latência a partir do Brasil (~130 ms) é irrelevante para uma lista de tarefas. São Paulo (sa-east-1) seria mais cara |
 | D2 | **2 EC2 Ubuntu 24.04**: app `t3.micro`, banco `t3.small` | VM única; RDS/DocumentDB; Kubernetes | Atende a arquitetura mínima com o menor custo. O MongoDB precisa de ~2 GiB (cache do WiredTiger + sistema). A app (Nginx estático + Node + Caddy) cabe em 1 GiB com swap. Serviços gerenciados fogem do escopo (MongoDB em VM) e Kubernetes seria complexo demais para os alunos |
 | D3 | Tipos restritos a t3.micro, t3.small, c7i-flex.large, m7i-flex.large | Qualquer tipo | Únicos tipos x86 elegíveis ao plano gratuito para contas novas; a validação evita erro na criação |
 | D4 | VM do banco com IP público **apenas para saída**, sem regra de entrada da internet | NAT Gateway; sub-rede privada com a VM da app como NAT | O NAT Gateway custa US$ 0,045/h (~US$ 33/mês), mais que as duas VMs juntas. A NAT na VM da app adiciona complexidade e um ponto de falha. Com SG + NACL + porta publicada só no IP privado, o banco não é alcançável pela internet (comprovado no teste de fumaça) |

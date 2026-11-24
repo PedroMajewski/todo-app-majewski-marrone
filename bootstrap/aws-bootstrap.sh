@@ -10,7 +10,7 @@
 #
 # Execute no AWS CloudShell (console da AWS, já autenticado):
 #   bash bootstrap/aws-bootstrap.sh <dono/repositorio> [regiao]
-#   ex.: bash bootstrap/aws-bootstrap.sh pedro/todo-app us-east-1
+#   ex.: bash bootstrap/aws-bootstrap.sh pedro/todo-app us-east-2
 #
 # Para remover tudo ao final do semestre (apaga state e backups!):
 #   bash bootstrap/aws-bootstrap.sh <dono/repositorio> [regiao] --remover
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO="${1:?Informe o repositório GitHub no formato dono/repositorio}"
-REGION="${2:-us-east-1}"
+REGION="${2:-us-east-2}"
 MODE="${3:-criar}"
 
 PROJECT="todo-app"
