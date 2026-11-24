@@ -27,7 +27,10 @@ docker exec "$CONTAINER" mongodump \
   --config /etc/todo-backup/mongodump.yml \
   --db "{{ mongo_db_name }}" --archive --gzip > "$FILE" 2> "${FILE}.log"
 
-TODOS="$(grep -oE 'done dumping [^ ]+\.todos \([0-9]+ documents?\)' "${FILE}.log" | grep -oE '[0-9]+' | tail -n 1 || true)"
+# O mongodump registra "done dumping `banco.colecao` (N documents)" (nome entre crases
+# nas versões atuais, sem crases nas antigas): o padrão aceita os dois formatos.
+# shellcheck disable=SC2016  # crase literal no padrão do sed
+TODOS="$(sed -nE 's/.*done dumping [`"]?[^ `"]*\.todos[`"]? \(([0-9]+) documents?\).*/\1/p' "${FILE}.log" | tail -n 1)"
 TODOS="${TODOS:-0}"
 BYTES="$(stat -c %s "$FILE")"
 SHA256="$(sha256sum "$FILE" | cut -d' ' -f1)"
