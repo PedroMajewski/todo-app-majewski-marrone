@@ -158,7 +158,7 @@ Remoção total ao fim do semestre: no CloudShell, `bash aws-bootstrap.sh <repo>
 
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
-| `plan` falha em *Credenciais AWS* / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | `AWS_ROLE_ARN` errado ou repositório diferente do informado no bootstrap | Confira a variável; rode o bootstrap de novo com o nome exato `dono/repo` |
+| `plan` falha em *Credenciais AWS* / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | `AWS_ROLE_ARN` errado, repositório diferente do informado no bootstrap ou bootstrap antigo sem o formato imutável do token (repositórios criados após 15/07/2026: `repo:dono@id/repo@id`) | Confira a variável; atualize o clone no CloudShell (`git pull`) e rode o bootstrap de novo com o nome exato `dono/repo`. O formato esperado aparece em *Settings → Actions → OIDC* do repositório |
 | `Defina o secret SSH_PUBLIC_KEY` | Secret ausente | Cadastre `SSH_PUBLIC_KEY` / `SSH_PRIVATE_KEY` |
 | `apply` falha com `InvalidParameterCombination` / tipo não elegível | Tipo de VM fora do plano gratuito ou indisponível na zona | Use `t3.micro` / `t3.small` |
 | Ansible: `Defina os secrets MONGO_...` | Secrets não cadastrados **no ambiente** (`dev`) | Settings → Environments → dev → secrets |

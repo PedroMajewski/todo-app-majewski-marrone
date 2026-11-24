@@ -151,6 +151,30 @@ fi
 # Role das pipelines (somente o repositório informado pode assumi-la)
 # ----------------------------------------------------------------------------
 log "Role IAM ${ROLE_NAME} (repositório ${REPO})"
+
+# Formatos do "sub" do token OIDC do GitHub:
+#  - clássico (repositórios antigos):          repo:dono/repositorio:...
+#  - imutável (criados a partir de 15/07/2026): repo:dono@<id-dono>/repositorio@<id-repo>:...
+# Os IDs vêm da API pública do GitHub (ou de GITHUB_OWNER_ID / GITHUB_REPO_ID,
+# para repositórios privados) e são fixos: um repositório recriado com o mesmo
+# nome recebe outro ID e não consegue assumir a role.
+GH_JSON="$(curl -fsS --max-time 15 "https://api.github.com/repos/${REPO}" 2>/dev/null || true)"
+GH_FULL_NAME="$(printf '%s' "$GH_JSON" | jq -r '.full_name // empty' 2>/dev/null || true)"
+OWNER_ID="${GITHUB_OWNER_ID:-$(printf '%s' "$GH_JSON" | jq -r '.owner.id // empty' 2>/dev/null || true)}"
+REPO_ID="${GITHUB_REPO_ID:-$(printf '%s' "$GH_JSON" | jq -r '.id // empty' 2>/dev/null || true)}"
+CANONICAL="${GH_FULL_NAME:-$REPO}"
+SUBJECTS=("repo:${REPO}:*")
+[ "$CANONICAL" != "$REPO" ] && SUBJECTS+=("repo:${CANONICAL}:*")
+if [ -n "$OWNER_ID" ] && [ -n "$REPO_ID" ]; then
+  SUBJECTS+=("repo:${CANONICAL%%/*}@${OWNER_ID}/${CANONICAL#*/}@${REPO_ID}:*")
+else
+  echo "AVISO: não foi possível obter os IDs do repositório na API do GitHub."
+  echo "       Repositórios criados após 15/07/2026 precisam deles. Informe-os e rode de novo:"
+  echo "       GITHUB_OWNER_ID=<id> GITHUB_REPO_ID=<id> bash $0 ${REPO} ${REGION}"
+fi
+SUBJECTS_JSON="$(printf '%s\n' "${SUBJECTS[@]}" | jq -R . | jq -cs .)"
+echo "Subjects aceitos: ${SUBJECTS_JSON}"
+
 TRUST_POLICY="$(cat <<EOF
 {
   "Version": "2012-10-17",
@@ -160,7 +184,7 @@ TRUST_POLICY="$(cat <<EOF
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
       "StringEquals": {"${OIDC_HOST}:aud": "sts.amazonaws.com"},
-      "StringLike": {"${OIDC_HOST}:sub": "repo:${REPO}:*"}
+      "StringLike": {"${OIDC_HOST}:sub": ${SUBJECTS_JSON}}
     }
   }]
 }
